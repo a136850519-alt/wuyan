@@ -119,15 +119,14 @@ struct EditorView: View {
     private var immersivePane: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Button { immersive = false } label: { Label("返回", systemImage: "chevron.left") }
+                Button { immersive = false } label: { Label("完成", systemImage: "checkmark") }
                 Spacer()
-                Text("\(viewModel.body.count) 字")
+                Text("\(viewModel.body.filter { !$0.isWhitespace }.count) 字")
                     .foregroundStyle(.secondary)
-                Button { importMedia() } label: { Label("图片", systemImage: "photo") }
-                Button { insertImages() } label: { Label("插图", systemImage: "photo.badge.plus") }
+                Button { importMedia() } label: { Label("附件", systemImage: "paperclip") }
+                Button { insertImages() } label: { Label("插图", systemImage: "photo") }
                 Button { toggleRecording() } label: { Label("录音", systemImage: appState.audioRecorder.isRecording ? "stop.circle" : "mic") }
                 Button { showAIPopover = true } label: { Label("AI", systemImage: "sparkles") }
-                Button { immersive = false } label: { Label("完成", systemImage: "checkmark") }
             }
             .labelStyle(.iconOnly)
             .padding(.horizontal, 24)
