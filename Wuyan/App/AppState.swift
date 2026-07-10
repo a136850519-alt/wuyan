@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import Security
 
@@ -161,7 +162,7 @@ final class AppState: ObservableObject {
         Task {
             // SyncCrypto 的 PBKDF2 密钥派生在此后台 Task 中完成，不阻塞主线程
             let crypto = Self.makeSyncCryptoFromDefaults()
-            let engine = SyncEngine(provider: provider, database: dbRef, crypto: crypto, archivedYears: archived) { progress in
+            let engine = SyncEngine(provider: provider, database: dbRef, crypto: crypto, archivedYears: archived, backendFingerprint: Self.backendFingerprint()) { progress in
                 await MainActor.run {
                     self.syncProgress = progress
                     if let detail = progress.detail, !detail.isEmpty {
@@ -210,7 +211,7 @@ final class AppState: ObservableObject {
             let crypto = Self.makeSyncCryptoFromDefaults()
             do {
                 let yearEntries = try entries.timeline(filter: .year(year))
-                let engine = SyncEngine(provider: provider, database: database, crypto: crypto) { progress in
+                let engine = SyncEngine(provider: provider, database: database, crypto: crypto, backendFingerprint: Self.backendFingerprint()) { progress in
                     await MainActor.run {
                         self.syncProgress = progress
                         self.syncMessage = "\(year) 年归档：\(progress.phase)"
@@ -289,7 +290,7 @@ final class AppState: ObservableObject {
         Task {
             let crypto = Self.makeSyncCryptoFromDefaults()
             do {
-                let engine = SyncEngine(provider: provider, database: database, crypto: crypto) { progress in
+                let engine = SyncEngine(provider: provider, database: database, crypto: crypto, backendFingerprint: Self.backendFingerprint()) { progress in
                     await MainActor.run {
                         self.syncProgress = progress
                         self.syncMessage = "\(year) 年下载：\(progress.phase)"
@@ -448,6 +449,24 @@ final class AppState: ObservableObject {
             username: username,
             password: password
         )
+    }
+
+    /// 基于 backend+baseURL+bucket 计算后端指纹（SHA256 前8位），用于区分不同远端配置
+    static func backendFingerprint() -> String {
+        let defaults = UserDefaults.standard
+        let backend = defaults.string(forKey: "settings.storage.backend") ?? "webDAV"
+        var identity: String
+        if backend == "s3" {
+            let endpoint = defaults.string(forKey: "settings.s3.endpoint") ?? ""
+            let bucket = defaults.string(forKey: "settings.s3.bucket") ?? ""
+            identity = "s3:\(endpoint):\(bucket)"
+        } else {
+            let baseURL = defaults.string(forKey: "settings.webdav.baseURL") ?? ""
+            let username = defaults.string(forKey: "settings.webdav.username") ?? ""
+            identity = "webdav:\(baseURL):\(username)"
+        }
+        let digest = CryptoKit.SHA256.hash(data: Data(identity.utf8))
+        return digest.compactMap { String(format: "%02x", $0) }.prefix(8).joined()
     }
 
     static func makeSyncCryptoFromDefaults() -> SyncCrypto? {

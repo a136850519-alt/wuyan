@@ -26,12 +26,15 @@ actor SyncEngine {
     private(set) var status: SyncStatus = .idle
     // 本次同步内懒加载的「已上传媒体路径」缓存；跨多次 uploadMedia 复用，避免重复探测/写入。
     private var mediaCache: Set<String>?
+    /// 后端指纹：用于区分不同的远端配置（避免切换 NAS/账号后旧水位线跳过拉取）
+    private let backendFingerprint: String
 
     init(
         provider: RemoteStorageProvider,
         database: AppDatabase,
         crypto: SyncCrypto? = nil,
         archivedYears: Set<Int> = [],
+        backendFingerprint: String = "",
         progressHandler: ProgressHandler? = nil
     ) {
         self.provider = provider
@@ -39,6 +42,7 @@ actor SyncEngine {
         self.crypto = crypto
         self.archivedYears = archivedYears
         self.progressHandler = progressHandler
+        self.backendFingerprint = backendFingerprint
     }
 
     private func year(ofDayKey key: String) -> Int? {
@@ -81,7 +85,7 @@ actor SyncEngine {
 
             // 远端指纹与上次同步一致：说明自上次没有任何条目/日札变化，跳过整个拉取阶段
             // （本地 dirty 仍照常推送）。任一远端改动都会刷新对应 updatedAt，从而改变指纹。
-            let remoteUnchanged = manifest.revision != nil && manifest.revision == Self.lastManifestRevision()
+            let remoteUnchanged = manifest.revision != nil && manifest.revision == Self.lastManifestRevision(forKey: revisionKey)
 
             let pullUnits = remoteUnchanged ? 0 : manifest.entries.count + manifest.daynotes.count
             let totalUnits = max(1, 7 + pullUnits + dirtyEntries.count + dayNotesToPush.count)
@@ -116,7 +120,7 @@ actor SyncEngine {
             manifest = pruneManifest(manifest)
             manifest.boards = try database.boardDAO.all()
             let savedRevision = try await saveManifest(manifest)
-            Self.storeLastRevision(savedRevision)
+            Self.storeLastRevision(savedRevision, forKey: revisionKey)
             progress.completedUnitCount += 1
             progress.phase = "正在记录同步状态"
             await self.report(progress)
@@ -214,7 +218,7 @@ actor SyncEngine {
     private func ensureRemoteTree() async throws {
         // 目录树一旦建好就基本不会再消失：命中缓存时只做一次轻量存在性校验，
         // 替代原先每次同步都串行发十几个 MKCOL 的固定开销。校验失败说明目录被外部清掉，重建并刷新缓存。
-        let key = "sync.remoteTreeReady"
+        let key = backendFingerprint.isEmpty ? "sync.remoteTreeReady" : "sync.remoteTreeReady.\(backendFingerprint)"
         if UserDefaults.standard.bool(forKey: key) {
             if try await provider.exists("/Wuyan/.sync/") { return }
         }
@@ -344,15 +348,19 @@ actor SyncEngine {
         return "e\(entries.count)-\(Int(maxEntry.timeIntervalSince1970))|n\(daynotes.count)-\(Int(maxNote.timeIntervalSince1970))"
     }
 
-    private static let revisionKey = "sync.lastManifestRevision"
+    private static let revisionKeyBase = "sync.lastManifestRevision"
 
-    private static func lastManifestRevision() -> String? {
-        let v = UserDefaults.standard.string(forKey: revisionKey)
+    private var revisionKey: String {
+        backendFingerprint.isEmpty ? Self.revisionKeyBase : "\(Self.revisionKeyBase).\(backendFingerprint)"
+    }
+
+    private static func lastManifestRevision(forKey key: String) -> String? {
+        let v = UserDefaults.standard.string(forKey: key)
         return (v?.isEmpty == false) ? v : nil
     }
 
-    private static func storeLastRevision(_ revision: String?) {
-        UserDefaults.standard.set(revision, forKey: revisionKey)
+    private static func storeLastRevision(_ revision: String?, forKey key: String) {
+        UserDefaults.standard.set(revision, forKey: key)
     }
 
     // 裁剪陈旧的删除墓碑：超过保留期的 deleted 条目从索引里移除（只动索引，不碰数据文件），
