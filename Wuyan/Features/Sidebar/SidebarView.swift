@@ -252,6 +252,18 @@ private struct BoardEditorSheet: View {
 
     private var board: Board?
 
+    private let symbolCandidates = [
+        "book", "book.fill", "heart.fill", "star.fill", "leaf.fill",
+        "sun.max.fill", "moon.fill", "cloud.fill", "drop.fill", "flame.fill",
+        "music.note", "paintbrush.fill", "camera.fill", "gift.fill", "graduationcap.fill",
+        "airplane", "bicycle", "car.fill", "flag.fill", "bell.fill",
+    ]
+
+    private let colorPresets = [
+        "#D85A30", "#E8A838", "#4CAF50", "#2196F3", "#9C27B0",
+        "#F44336", "#009688", "#FF9800", "#607D8B", "#795548",
+    ]
+
     init(board: Board?) {
         self.board = board
         _name = State(initialValue: board?.name ?? "")
@@ -268,8 +280,59 @@ private struct BoardEditorSheet: View {
                 .font(.title2.weight(.semibold))
 
             TextField("名称", text: $name)
-            TextField("SF Symbol 图标名", text: $iconName)
-            TextField("颜色 Hex", text: $colorHex)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("图标")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 10) {
+                    ForEach(symbolCandidates, id: \.self) { symbol in
+                        Button {
+                            iconName = symbol
+                        } label: {
+                            Image(systemName: symbol)
+                                .font(.title3)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(iconName == symbol ? Palette.cinnabar.opacity(0.18) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(iconName == symbol ? Palette.cinnabar : Palette.hairline, lineWidth: iconName == symbol ? 1.5 : 0.5)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(iconName == symbol ? Palette.cinnabarDeep : .primary)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("颜色")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    ForEach(colorPresets, id: \.self) { hex in
+                        Button {
+                            colorHex = hex
+                        } label: {
+                            Circle()
+                                .fill(Color(hex: hex))
+                                .frame(width: 28, height: 28)
+                                .overlay(
+                                    Circle()
+                                        .stroke(colorHex == hex ? Palette.cinnabarDeep : Color.clear, lineWidth: 2)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ColorPicker("", selection: Binding(
+                        get: { Color(hex: colorHex) },
+                        set: { colorHex = $0.toHex() ?? colorHex }
+                    ), supportsOpacity: false)
+                        .labelsHidden()
+                }
+            }
 
             Picker("类型", selection: $kind) {
                 Text("五年").tag(BoardKind.fiveYear)
@@ -321,5 +384,15 @@ private struct BoardEditorSheet: View {
         } catch {
             appState.errorMessage = error.localizedDescription
         }
+    }
+}
+
+extension Color {
+    func toHex() -> String? {
+        guard let nsColor = NSColor(self).usingColorSpace(.sRGB) else { return nil }
+        let r = Int(nsColor.redComponent * 255)
+        let g = Int(nsColor.greenComponent * 255)
+        let b = Int(nsColor.blueComponent * 255)
+        return String(format: "#%02X%02X%02X", r, g, b)
     }
 }
