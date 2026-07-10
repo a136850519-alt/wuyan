@@ -42,6 +42,7 @@ struct SettingsView: View {
     @State private var cryptoMessage: String?
     @State private var babyBirthday = Date()
     @State private var babyBirthdayMessage: String?
+    @State private var conflictSummaries: [UUID: EntrySummary] = [:]
 
     var body: some View {
         Form {
@@ -127,12 +128,23 @@ struct SettingsView: View {
                         Label("检测到 \(appState.syncConflicts.count) 个同步冲突", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(Palette.cinnabar)
                         ForEach(appState.syncConflicts, id: \.self) { id in
-                            Button(id.uuidString) {
+                            Button {
                                 appState.selectedEntryId = id
                                 appState.sidebarSelection = .all
+                            } label: {
+                                if let summary = conflictSummaries[id] {
+                                    let dateStr = summary.dayDate
+                                    let titleText = summary.title?.isEmpty == false ? summary.title! : String(summary.bodyPreview.prefix(30))
+                                    Text("\(dateStr) · \(titleText)")
+                                } else {
+                                    Text(id.uuidString.prefix(8) + "…")
+                                }
                             }
                             .buttonStyle(.link)
                         }
+                        Text("冲突副本保存在 NAS 的 /Wuyan/entries/conflicts/ 目录下。")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -304,6 +316,10 @@ struct SettingsView: View {
                     reminderTimes = [Date()]
                 }
             }
+            loadConflictSummaries()
+        }
+        .onChange(of: appState.syncConflicts) {
+            loadConflictSummaries()
         }
     }
 
@@ -512,5 +528,13 @@ struct SettingsView: View {
         }
         SecureSettings.save(cryptoPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
         cryptoMessage = cryptoEnabled ? "加密设置已保存。请牢记口令。" : "加密已关闭。"
+    }
+
+    private func loadConflictSummaries() {
+        guard !appState.syncConflicts.isEmpty else {
+            conflictSummaries = [:]
+            return
+        }
+        conflictSummaries = (try? appState.entries.summaries(for: appState.syncConflicts)) ?? [:]
     }
 }

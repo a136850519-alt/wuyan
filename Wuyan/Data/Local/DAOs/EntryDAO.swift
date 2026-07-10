@@ -152,6 +152,22 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// 按 ID 批量查摘要（用于冲突列表等场景，不读 bodyRTF）
+    func summaries(for ids: [UUID]) throws -> [UUID: EntrySummary] {
+        guard !ids.isEmpty else { return [:] }
+        return try writer.read { db in
+            let idStrings = ids.map { $0.uuidString }
+            let placeholders = idStrings.map { _ in "?" }.joined(separator: ",")
+            let sql = """
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength
+                FROM entry
+                WHERE id IN (\(placeholders))
+                """
+            let summaries: [EntrySummary] = try EntrySummary.fetchAll(db, sql: sql, arguments: StatementArguments(idStrings))
+            return Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+        }
+    }
+
     /// 取最近 N 条摘要（不读 bodyRTF），供 AI 等不需要完整内容的场景
     func recentSummaries(limit: Int = 30) throws -> [EntrySummary] {
         try writer.read { db in
