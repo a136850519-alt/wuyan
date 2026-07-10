@@ -395,7 +395,7 @@ final class AppState: ObservableObject {
             )
             return ClaudeProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey),
-                model: defaults.string(forKey: "settings.claude.model") ?? "claude-3-5-sonnet-latest",
+                model: defaults.string(forKey: "settings.claude.model") ?? "claude-sonnet-5",
                 endpoint: endpoint
             )
         }

@@ -2,7 +2,7 @@ import Foundation
 
 struct ClaudeProvider: AIProvider {
     var apiKey: String
-    var model: String = "claude-3-5-sonnet-latest"
+    var model: String = "claude-sonnet-5"
     var endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!
     var session: URLSession = .shared
 

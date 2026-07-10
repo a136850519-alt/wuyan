@@ -16,7 +16,7 @@ struct SettingsView: View {
     @AppStorage("settings.zhipu.endpoint") private var zhipuEndpoint = "https://open.bigmodel.cn/api/paas/v4"
     @AppStorage("settings.zhipu.model") private var zhipuModel = "glm-5.2"
     @AppStorage("settings.claude.endpoint") private var claudeEndpoint = "https://api.anthropic.com/v1/messages"
-    @AppStorage("settings.claude.model") private var claudeModel = "claude-3-5-sonnet-latest"
+    @AppStorage("settings.claude.model") private var claudeModel = "claude-sonnet-5"
     @AppStorage("settings.ollama.endpoint") private var ollamaEndpoint = "http://localhost:11434"
     @AppStorage("settings.ollama.model") private var ollamaModel = "qwen2.5"
     @AppStorage("settings.appearance.bodyFont") private var bodyFont = "LXGWWenKai-Regular"
@@ -174,7 +174,7 @@ struct SettingsView: View {
                     SecureField("智谱 API Key", text: $zhipuAPIKey)
                 } else if aiProvider == "claude" {
                     TextField("Claude URL", text: $claudeEndpoint)
-                    TextField("Claude 模型", text: $claudeModel)
+                    TextField("Claude 模型", text: $claudeModel, prompt: Text("如 claude-sonnet-5、claude-opus-5"))
                     SecureField("Claude API Key", text: $claudeAPIKey)
                 } else {
                     TextField("Ollama URL", text: $ollamaEndpoint)
