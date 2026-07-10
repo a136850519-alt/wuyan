@@ -2,6 +2,15 @@ import AppKit
 import CoreText
 import Foundation
 
+/// 完整备份文档：包含所有数据表，不止 entries
+struct BackupDocument: Codable {
+    var schemaVersion: Int = 1
+    var boards: [Board]
+    var dayNotes: [DayNote]
+    var entries: [Entry]
+    var mediaAssets: [MediaAsset]
+}
+
 final class ExportService {
     func exportMarkdown(entries: [Entry], mediaDAO: MediaAssetDAO? = nil, to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -41,21 +50,75 @@ final class ExportService {
         try data.write(to: url, options: .atomic)
     }
 
+    /// 导出完整备份（包含 boards/dayNotes/entries/mediaAssets），替代只导 entries 的旧版
+    func exportFullBackup(database: AppDatabase, to url: URL) throws {
+        let boards = try database.boardDAO.all()
+        let dayNotes = try database.dayNoteDAO.all()
+        let entries = try database.entryDAO.timeline(filter: .all)
+        let mediaAssets = try database.mediaAssetDAO.allAssets()
+        let doc = BackupDocument(
+            schemaVersion: 1,
+            boards: boards,
+            dayNotes: dayNotes,
+            entries: entries,
+            mediaAssets: mediaAssets
+        )
+        let data = try JSONEncoder.wuyan.encode(doc)
+        try data.write(to: url, options: .atomic)
+    }
+
     func importJSON(from url: URL, database: AppDatabase) throws -> Int {
         let data = try Data(contentsOf: url)
+        // 先尝试完整备份格式，失败回退旧格式（纯 entries 数组）
+        if let doc = try? JSONDecoder.wuyan.decode(BackupDocument.self, from: data) {
+            return try importBackupDocument(doc, database: database)
+        }
+        // 旧格式兼容
         let entries = try JSONDecoder.wuyan.decode([Entry].self, from: data)
         for entry in entries {
             if try database.boardDAO.board(id: entry.boardId) == nil,
                let fallback = try database.boardDAO.all().first {
                 var repaired = entry
                 repaired.boardId = fallback.id
-                try database.entryDAO.saveRemote(repaired)
+                try database.entryDAO.save(repaired)
             } else {
-                try database.entryDAO.saveRemote(entry)
+                try database.entryDAO.save(entry)
             }
             try database.entryDAO.upsertBaseline(for: entry)
         }
         return entries.count
+    }
+
+    private func importBackupDocument(_ doc: BackupDocument, database: AppDatabase) throws -> Int {
+        // 导入板块（跳过已存在的内置板块）
+        for board in doc.boards {
+            if try database.boardDAO.board(id: board.id) == nil {
+                try database.boardDAO.save(board)
+            }
+        }
+        // 导入每日一句
+        for note in doc.dayNotes {
+            try database.dayNoteDAO.upsert(note)
+        }
+        // 导入条目（dirty=true，确保还原后可推送同步）
+        for entry in doc.entries {
+            if try database.boardDAO.board(id: entry.boardId) == nil,
+               let fallback = try database.boardDAO.all().first {
+                var repaired = entry
+                repaired.boardId = fallback.id
+                repaired.dirty = true
+                try database.entryDAO.save(repaired)
+            } else {
+                var dirtyEntry = entry
+                dirtyEntry.dirty = true
+                try database.entryDAO.save(dirtyEntry)
+            }
+        }
+        // 导入媒体元数据
+        for asset in doc.mediaAssets {
+            try? database.mediaAssetDAO.save(asset)
+        }
+        return doc.entries.count
     }
 
     func exportPDF(entries: [Entry], to url: URL) throws {

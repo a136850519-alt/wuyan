@@ -43,6 +43,13 @@ struct MediaAssetDAO {
         }
     }
 
+    /// 获取所有媒体资产元数据
+    func allAssets() throws -> [MediaAsset] {
+        try writer.read { db in
+            try MediaAsset.fetchAll(db)
+        }
+    }
+
     /// 还有多少条目（媒体行）引用这个内容寻址的 sha256。用于判断本地文件是否可安全清理。
     func referenceCount(sha256: String) throws -> Int {
         try writer.read { db in
