@@ -26,8 +26,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("Quartz"),
-                .linkedLibrary("commonCrypto")
+                .linkedFramework("Quartz")
             ]
         ),
         .testTarget(

@@ -26,11 +26,16 @@ final class LocalMediaStore: MediaStoreProtocol {
     }()
 
     /// 将 DB 中的相对路径解析为绝对路径。兼容旧版绝对路径（直接返回）。
-    static func resolvePath(_ relative: String?) -> String? {
-        guard let relative else { return nil }
+    static func resolvePath(_ relative: String) -> String {
         // 如果已经是绝对路径（旧数据兼容），直接返回
         if relative.hasPrefix("/") { return relative }
         return mediaRootURL.appendingPathComponent(relative).path
+    }
+
+    /// Optional 版本：传入 nil 返回 nil。
+    static func resolvePath(_ relative: String?) -> String? {
+        guard let relative else { return nil }
+        return resolvePath(relative)
     }
 
     /// 将绝对路径转为相对路径（相对 mediaRootURL）。无法转换时返回原路径。
