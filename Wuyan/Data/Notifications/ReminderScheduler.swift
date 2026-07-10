@@ -3,6 +3,8 @@ import UserNotifications
 
 final class ReminderScheduler {
     private let skipWrittenDaysKey = "settings.reminder.skipWrittenDays"
+    /// 注册的天数范围
+    private let lookaheadDays = 7
 
     func requestAuthorization() async -> Bool {
         do {
@@ -12,29 +14,71 @@ final class ReminderScheduler {
         }
     }
 
+    /// 为未来 7 天逐天注册提醒（每天各时间段一条，identifier 带日期），不使用 repeats
     func setDailyReminders(_ times: [DateComponents]) async {
         await cancelAll()
-        for (index, components) in times.enumerated() {
-            let content = UNMutableNotificationContent()
-            content.title = "晤言"
-            content.body = "给今天留下一句话。"
-            content.sound = .default
-            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-            let request = UNNotificationRequest(identifier: "wuyan.daily.\(index)", content: content, trigger: trigger)
-            try? await UNUserNotificationCenter.current().add(request)
+        let center = UNUserNotificationCenter.current()
+        let calendar = Calendar.current
+        let today = Date()
+
+        for dayOffset in 0..<lookaheadDays {
+            guard let targetDate = calendar.date(byAdding: .day, value: dayOffset, to: today) else { continue }
+            for (timeIndex, components) in times.enumerated() {
+                // 构造目标日期的完整 DateComponents
+                var fullComponents = DateComponents()
+                fullComponents.year = calendar.component(.year, from: targetDate)
+                fullComponents.month = calendar.component(.month, from: targetDate)
+                fullComponents.day = calendar.component(.day, from: targetDate)
+                fullComponents.hour = components.hour
+                fullComponents.minute = components.minute
+
+                let content = UNMutableNotificationContent()
+                content.title = "晤言"
+                content.body = "给今天留下一句话。"
+                content.sound = .default
+
+                let trigger = UNCalendarNotificationTrigger(dateMatching: fullComponents, repeats: false)
+                // identifier 包含日期和时段序号，便于精确取消
+                let dayStr = Self.dateFormatter.string(from: targetDate)
+                let identifier = "wuyan.daily.\(dayStr).\(timeIndex)"
+                let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+                try? await center.add(request)
+            }
         }
     }
 
+    /// 基于前缀过滤删除所有 wuyan.daily.* 通知
     func cancelAll() async {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: (0..<12).map { "wuyan.daily.\($0)" })
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let ids = pending.map(\.identifier).filter { $0.hasPrefix("wuyan.daily.") }
+        if !ids.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: ids)
+        }
     }
 
+    /// 刷新今天的提醒状态：今天已写且用户选择跳过 → 仅取消今天剩余时段，保留未来天数
     func refreshForToday(hasWrittenToday: Bool, times: [DateComponents]) async {
         let skip = UserDefaults.standard.bool(forKey: skipWrittenDaysKey)
+        let center = UNUserNotificationCenter.current()
+
         if skip && hasWrittenToday {
-            await cancelAll()
+            // 仅取消今天剩余的通知，不移除未来天数的
+            let pending = await center.pendingNotificationRequests()
+            let todayStr = Self.dateFormatter.string(from: Date())
+            let todayIds = pending.map(\.identifier).filter { $0.hasPrefix("wuyan.daily.\(todayStr).") }
+            if !todayIds.isEmpty {
+                center.removePendingNotificationRequests(withIdentifiers: todayIds)
+            }
         } else {
+            // 完整重新注册未来 7 天
             await setDailyReminders(times)
         }
     }
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 }
