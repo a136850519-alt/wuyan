@@ -93,6 +93,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.isRichText = true
         textView.importsGraphics = true
         textView.allowsImageEditing = false
+        textView.allowsUndo = true
         textView.usesFindBar = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -141,10 +142,16 @@ struct RichTextEditor: NSViewRepresentable {
 
         func load(textView: NSTextView, text: String, rtfData: Data?) {
             isApplyingExternalValue = true
+            // 切换条目前清空撤销栈，防止跨条目 ⌘Z 串档
+            textView.undoManager?.removeAllActions()
             defer { isApplyingExternalValue = false }
 
             if let rtfData,
                let attributed = try? NSAttributedString(
+                data: rtfData,
+                options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                documentAttributes: nil
+               ) ?? try? NSAttributedString(
                 data: rtfData,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
                 documentAttributes: nil
@@ -168,7 +175,11 @@ struct RichTextEditor: NSViewRepresentable {
 
         private static func rtfData(from textView: NSTextView) -> Data? {
             let attributed = textView.attributedString()
+            // 优先使用 RTFD 格式（保留内嵌图片附件），回退到 RTF（纯文本旧格式兼容）
             return try? attributed.data(
+                from: NSRange(location: 0, length: attributed.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
+            ) ?? try? attributed.data(
                 from: NSRange(location: 0, length: attributed.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
             )
