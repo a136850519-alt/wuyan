@@ -118,6 +118,11 @@ struct SidebarView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .tag(SidebarSelection.settings)
+                if !appState.archivedYears.isEmpty {
+                    Text("不含已归档年份")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .listStyle(.sidebar)

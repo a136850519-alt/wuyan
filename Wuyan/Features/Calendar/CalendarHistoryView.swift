@@ -25,6 +25,13 @@ struct CalendarHistoryView: View {
                 }
                 .padding(.horizontal)
 
+                if !appState.archivedYears.isEmpty {
+                    Text("以上统计不含已归档年份：\(appState.archivedYears.map(String.init).joined(separator: "、"))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal)
+                }
+
             monthCalendar(countsByDay: countsByDay)
                 .padding(.horizontal)
 
