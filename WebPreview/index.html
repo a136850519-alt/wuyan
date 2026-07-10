@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>晤言 · 网页预览</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css');
+
+:root{
+  --cinnabar:#D85A30; --cinnabar-deep:#993C1D; --cinnabar-soft:#FBF3EF;
+  --cinnabar-hover:#FAECE7; --cinnabar-stroke:#E8C9BC; --amber:#C98522;
+  --baby:#D66A91; --baby-pink:#FBEAF0; --baby-text:#993556;
+  --paper:#FCFBF9; --sidebar:#F4F1EC; --ink:#2b2926; --ink-2:#6b665f; --ink-3:#9c968d;
+  --hairline:rgba(0,0,0,.10); --card-sel:#F0ECE5;
+  --serif:'LXGW WenKai','Songti SC',serif;
+  --sans:-apple-system,'PingFang SC','Helvetica Neue',sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#1c1b1a; --sidebar:#232220; --ink:#ece9e4; --ink-2:#a8a39b; --ink-3:#726d65;
+    --hairline:rgba(255,255,255,.12); --card-sel:#2c2a27; --cinnabar-soft:#33271f;
+    --cinnabar-hover:#3d2c22; --cinnabar-stroke:#5a4234; --cinnabar-deep:#e8a684;
+    --baby-pink:#3a2630; --baby-text:#e7a7c0;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#e7e3dc;font-family:var(--sans);color:var(--ink);
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:14px;padding:26px 16px}
+@media (prefers-color-scheme: dark){body{background:#141312}}
+.hint{font-size:12px;color:#8a857c}
+.window{width:min(1060px,100%);height:680px;background:var(--paper);border-radius:12px;
+  box-shadow:0 22px 60px rgba(0,0,0,.28);overflow:hidden;display:flex;flex-direction:column;
+  border:.5px solid var(--hairline);position:relative}
+.titlebar{height:42px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;
+  border-bottom:.5px solid var(--hairline);background:var(--sidebar)}
+.dot{width:12px;height:12px;border-radius:50%}
+.tb-title{font-family:var(--serif);font-size:14px;color:var(--ink-2);margin-left:8px;letter-spacing:1px}
+.tb-spacer{flex:1}
+.tb-btn{font-size:13px;color:var(--ink-2);padding:5px 10px;border-radius:7px;cursor:pointer}
+.tb-btn:hover{background:rgba(0,0,0,.06)}
+.tb-new{color:#fff;background:var(--cinnabar)}
+.tb-new:hover{background:var(--cinnabar)}
+.body{flex:1;display:flex;min-height:0}
+
+/* sidebar */
+.sidebar{width:182px;flex:none;background:var(--sidebar);border-right:.5px solid var(--hairline);
+  padding:14px 10px;display:flex;flex-direction:column;gap:2px;overflow:auto}
+.brand{font-family:var(--serif);font-size:20px;letter-spacing:3px;padding:2px 6px 14px}
+.nav{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;font-size:13px;
+  color:var(--ink-2);cursor:pointer}
+.nav:hover{background:rgba(0,0,0,.05)}
+.nav.on{background:var(--paper);color:var(--ink);border:.5px solid var(--hairline)}
+.nav .ic{width:16px;text-align:center;opacity:.8}
+.sec{font-size:11px;color:var(--ink-3);letter-spacing:1px;padding:14px 9px 6px}
+.bdot{width:8px;height:8px;border-radius:50%}
+.grow{flex:1}
+.streak{display:flex;align-items:center;justify-content:space-between;padding:10px 8px;
+  border-top:.5px solid var(--hairline);font-size:13px;color:var(--cinnabar)}
+
+/* center + reader */
+.center{width:262px;flex:none;border-right:.5px solid var(--hairline);display:flex;flex-direction:column;min-height:0}
+.search{margin:12px;display:flex;align-items:center;gap:7px;background:rgba(0,0,0,.05);
+  border-radius:8px;padding:7px 11px;color:var(--ink-3);font-size:12px}
+.tl{overflow:auto;padding:0 8px 12px}
+.daygrp{font-size:11px;color:var(--ink-3);letter-spacing:1px;padding:10px 8px 4px}
+.card{padding:11px;border-radius:9px;cursor:pointer;margin:3px 0}
+.card:hover{background:rgba(0,0,0,.04)}
+.card.sel{background:var(--card-sel)}
+.card .row{display:flex;justify-content:space-between;align-items:baseline}
+.card .ti{font-size:14px;color:var(--ink)}
+.card.sel .ti{font-weight:500}
+.card .tm{font-size:11px;color:var(--ink-3)}
+.card .ex{font-size:12px;color:var(--ink-2);line-height:1.5;margin:4px 0 6px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.meta-mini{display:flex;gap:10px;font-size:11px;color:var(--ink-3)}
+
+.reader{flex:1;min-width:0;overflow:auto;padding:24px 30px}
+.daynote{background:var(--cinnabar-soft);border-radius:8px;padding:12px 16px;margin-bottom:22px}
+.daynote .dk{font-size:11px;color:var(--cinnabar-deep);opacity:.7;letter-spacing:1px;margin-bottom:4px}
+.daynote .pl{font-family:var(--serif);font-size:15px;line-height:1.7;color:var(--cinnabar-deep)}
+.bigdate{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+.bigdate .d{font-family:var(--serif);font-size:40px;line-height:1}
+.bigdate .s{font-size:12px;color:var(--ink-2);line-height:1.5}
+.r-title{font-family:var(--serif);font-size:22px;margin-bottom:14px}
+.r-body{font-family:var(--serif);font-size:16px;line-height:2;color:var(--ink)}
+.r-photo{margin:16px 0;height:120px;border-radius:9px;background:rgba(0,0,0,.05);
+  display:flex;align-items:center;justify-content:center;color:var(--ink-3);font-size:12px;gap:6px}
+.r-meta{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:18px;
+  padding-top:14px;border-top:.5px solid var(--hairline);font-size:12px;color:var(--ink-2)}
+.pill{padding:3px 10px;border-radius:999px;background:rgba(0,0,0,.05);font-size:11px}
+
+/* panes */
+.pane{display:none;flex:1;min-height:0}
+.pane.on{display:flex}
+.stats{flex:1;overflow:auto;padding:24px 30px}
+.cards4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:26px}
+.mc{background:rgba(0,0,0,.04);border-radius:9px;padding:13px}
+.mc .l{font-size:12px;color:var(--ink-2)}
+.mc .v{font-size:25px;margin-top:3px}
+.stat-cols{display:flex;gap:30px;flex-wrap:wrap}
+.col{flex:1;min-width:250px}
+.col h3{font-family:var(--serif);font-size:16px;font-weight:400;margin-bottom:12px}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;text-align:center}
+.cal .w{font-size:11px;color:var(--ink-3);padding:3px 0}
+.cal .day{position:relative;font-size:12px;padding:7px 0;border-radius:7px;color:var(--ink)}
+.cal .day.empty{color:var(--ink-3)}
+.cal .day.today{background:var(--cinnabar);color:#fff}
+.cal .mk{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--cinnabar)}
+.heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:3px}
+.heat span{width:10px;height:10px;border-radius:2px}
+.legend{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:11px;color:var(--ink-3)}
+.legend span{width:11px;height:11px;border-radius:2px}
+
+.settings{flex:1;overflow:auto;padding:24px 30px;max-width:560px}
+.set-row{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:.5px solid var(--hairline)}
+.set-row .t{font-size:14px}
+.set-row .d{font-size:12px;color:var(--ink-2);margin-top:2px}
+.sw{width:40px;height:23px;border-radius:999px;position:relative;flex:none;cursor:pointer;transition:background .2s}
+.sw.on{background:var(--cinnabar)} .sw.off{background:var(--hairline)}
+.sw i{position:absolute;top:2px;width:19px;height:19px;border-radius:50%;background:#fff;transition:left .2s}
+.sw.on i{left:19px} .sw.off i{left:2px}
+.seg{display:flex;border:.5px solid var(--hairline);border-radius:8px;overflow:hidden;max-width:320px;margin-top:14px}
+.seg div{flex:1;text-align:center;font-size:12px;padding:9px;cursor:pointer;color:var(--ink-2)}
+.seg div.on{background:var(--card-sel);color:var(--ink)}
+.note{display:flex;gap:9px;background:rgba(72,116,203,.12);border-radius:8px;padding:11px 13px;margin:16px 0;
+  font-size:12px;line-height:1.6;color:#3b5fa5}
+@media (prefers-color-scheme: dark){.note{color:#9db8ec}}
+
+/* ritual overlay */
+.ritual{position:absolute;inset:42px 0 0 0;background:var(--paper);display:none;flex-direction:column;
+  padding:30px 34px;overflow:auto}
+.ritual.on{display:flex;animation:fadein .4s ease}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+.r-hint{font-size:12px;color:var(--ink-3);margin-bottom:10px}
+.r-input{font-family:var(--serif);font-size:16px;line-height:1.7;color:var(--ink);
+  border:none;border-bottom:.5px solid var(--cinnabar-stroke);padding:6px 0 12px;width:100%;
+  background:transparent;outline:none;resize:none}
+.btn{font-size:13px;border-radius:8px;padding:9px 20px;cursor:pointer;border:none;font-family:var(--sans)}
+.btn-primary{background:var(--cinnabar);color:#fff;transition:transform .1s,background .15s}
+.btn-primary:active{transform:scale(.98);background:var(--cinnabar-deep)}
+.btn-ghost{background:transparent;color:var(--ink-2)}
+.btn-ghost:hover{color:var(--ink)}
+.ai-label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--cinnabar);margin:24px 0 12px}
+.poetic{font-family:var(--serif);font-size:19px;line-height:1.95;color:var(--ink);min-height:74px}
+.seg-rev{opacity:0;transform:translateY(9px);transition:opacity .6s ease,transform .6s ease}
+.seg-rev.in{opacity:1;transform:none}
+.row-actions{display:flex;align-items:center;margin-top:20px}
+.step2-top{text-align:center;margin-bottom:34px}
+.step2-top .dk{font-size:11px;color:var(--ink-3);letter-spacing:1px;margin-bottom:6px}
+.step2-top .pl{font-family:var(--serif);font-size:15px;line-height:1.8;color:var(--ink-2);max-width:430px;margin:0 auto}
+.keys{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.board-key{width:310px;height:60px;display:flex;align-items:center;gap:12px;padding:0 22px;
+  font-family:var(--serif);font-size:21px;letter-spacing:2px;color:var(--cinnabar-deep);
+  background:var(--cinnabar-soft);border:1px solid var(--cinnabar-stroke);border-radius:18px;cursor:pointer;
+  opacity:0;transform:translateY(16px);
+  transition:opacity .6s ease,transform .25s ease,background .2s ease,border-color .2s ease}
+.board-key.in{opacity:1;transform:none}
+.board-key:hover{background:var(--cinnabar-hover);border-color:var(--cinnabar)}
+.board-key:active{transform:scale(.97)}
+.board-key .ic{font-size:19px}
+.center-x{text-align:center;margin-top:22px}
+.spark{font-size:14px}
+.toast{position:absolute;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--ink);color:var(--paper);font-size:13px;padding:10px 18px;border-radius:999px;
+  opacity:0;transition:all .3s;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="hint">晤言 · 网页高保真预览（复刻原生 app 的配色 / 霞鹜文楷 / 写作仪式与按键触感）· 点右上「新建」体验仪式</div>
+
+<div class="window">
+  <div class="titlebar">
+    <span class="dot" style="background:#ff5f57"></span>
+    <span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span>
+    <span class="tb-title">晤言</span>
+    <span class="tb-spacer"></span>
+    <span class="tb-btn tb-new" onclick="openRitual()">＋ 新建</span>
+  </div>
+
+  <div class="body">
+    <div class="sidebar">
+      <div class="brand">晤言</div>
+      <div class="nav on" data-v="home" onclick="nav('home',this)"><span class="ic">▤</span>全部</div>
+      <div class="nav" onclick="nav('home',this)"><span class="ic">☆</span>收藏</div>
+      <div class="nav" onclick="nav('home',this)"><span class="ic">↺</span>历史上的今天</div>
+      <div class="nav" data-v="stats" onclick="nav('stats',this)"><span class="ic">▦</span>回顾统计</div>
+      <div class="sec">板块</div>
+      <div class="nav" onclick="nav('home',this)"><span class="bdot" style="background:var(--amber)"></span>五年</div>
+      <div class="nav" onclick="nav('home',this)"><span class="bdot" style="background:var(--cinnabar)"></span>日常唠叨</div>
+      <div class="nav" onclick="nav('home',this)"><span class="bdot" style="background:var(--baby)"></span>宝贝成长记录</div>
+      <div class="grow"></div>
+      <div class="streak"><span>✦ 连续 23 天</span><span class="tb-btn" data-v="settings" onclick="nav('settings',this)" style="padding:3px 6px">⚙</span></div>
+    </div>
+
+    <!-- HOME -->
+    <div class="pane on" id="pane-home">
+      <div class="center">
+        <div class="search">⌕ 搜索日记…</div>
+        <div class="tl" id="tl"></div>
+      </div>
+      <div class="reader" id="reader"></div>
+    </div>
+
+    <!-- STATS -->
+    <div class="pane" id="pane-stats">
+      <div class="stats">
+        <div class="cards4">
+          <div class="mc"><div class="l">连续打卡</div><div class="v" style="color:var(--cinnabar)">23 天</div></div>
+          <div class="mc"><div class="l">最长连续</div><div class="v">58 天</div></div>
+          <div class="mc"><div class="l">累计篇数</div><div class="v">412 篇</div></div>
+          <div class="mc"><div class="l">累计字数</div><div class="v">12.3 万</div></div>
+        </div>
+        <div class="stat-cols">
+          <div class="col">
+            <h3>2026 年 6 月</h3>
+            <div class="cal" id="cal"></div>
+          </div>
+          <div class="col">
+            <h3>过去一年</h3>
+            <div class="heat" id="heat"></div>
+            <div class="legend">少<span style="background:rgba(0,0,0,.06)"></span><span style="background:#F5C4B3"></span><span style="background:#F0997B"></span><span style="background:#D85A30"></span>多</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="pane" id="pane-settings">
+      <div class="settings">
+        <div class="set-row">
+          <div><div class="t">启用 AI 辅助</div><div class="d">写作引导、回顾总结、自动标签</div></div>
+          <div class="sw on" onclick="this.classList.toggle('on');this.classList.toggle('off')"><i></i></div>
+        </div>
+        <div style="padding:16px 0;border-bottom:.5px solid var(--hairline)">
+          <div class="t">运行方式</div>
+          <div class="seg">
+            <div class="on">⌁ 本地 Ollama</div>
+            <div>☁ 云端 Claude</div>
+          </div>
+          <div class="note"><span>🛡</span><span>当前为本地模式，日记内容不会离开这台 Mac。切换到云端前会逐次提示发送范围。</span></div>
+        </div>
+        <div class="set-row">
+          <div><div class="t">仪式 AI 润色</div><div class="d">关闭后新建直接用大白话当批注</div></div>
+          <div class="sw on" onclick="this.classList.toggle('on');this.classList.toggle('off')"><i></i></div>
+        </div>
+        <div class="set-row">
+          <div><div class="t">敏感板块禁止 AI</div><div class="d">被标记的板块不参与任何分析与索引</div></div>
+          <div class="sw off" onclick="this.classList.toggle('on');this.classList.toggle('off')"><i></i></div>
+        </div>
+        <div class="set-row" style="border:none">
+          <div><div class="t">正文字体</div><div class="d">默认霞鹜文楷（柔和楷体）</div></div>
+          <div class="seg" style="margin:0;max-width:220px"><div class="on">霞鹜文楷</div><div>系统衬线</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RITUAL -->
+  <div class="ritual" id="ritual">
+    <div id="r-step1">
+      <div class="bigdate"><span class="d">17</span><span class="s">六月 2026<br>周三 · 14:30</span></div>
+      <div id="r-inputzone">
+        <div class="r-hint">今天的第一笔 · 先用一句话记下今天</div>
+        <textarea class="r-input" id="r-input" rows="2">今天加班到很晚，回家路上抬头看到一片很好看的晚霞。</textarea>
+        <div class="row-actions" style="justify-content:flex-end">
+          <button class="btn btn-primary" onclick="goPoetic()"><span class="spark">✦</span> 落笔成句</button>
+        </div>
+      </div>
+      <div id="r-resultzone" style="display:none">
+        <div class="ai-label"><span class="spark">✦</span> 晤言为你写下</div>
+        <div class="poetic" id="poetic"></div>
+        <div class="row-actions" id="r-actions" style="display:none">
+          <button class="btn btn-ghost" onclick="reroll()">↺ 换一句</button>
+          <span style="flex:1"></span>
+          <button class="btn btn-ghost" onclick="goStep2()">跳过</button>
+          <button class="btn btn-primary" onclick="goStep2()">下一步</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="r-step2" style="display:none;flex:1;flex-direction:column">
+      <div class="step2-top">
+        <div class="dk">六月十七日 · 周三</div>
+        <div class="pl" id="s2-poetic"></div>
+      </div>
+      <div class="keys">
+        <button class="board-key" data-i="0"><span class="ic">↺</span>五年</button>
+        <button class="board-key" data-i="1"><span class="ic">☕</span>日常唠叨</button>
+        <button class="board-key" data-i="2"><span class="ic">🧸</span>宝贝成长记录</button>
+      </div>
+      <div class="center-x"><button class="btn btn-ghost" onclick="backStep1()">‹ 上一步</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+const entries=[
+  {id:1,group:'今天 · 6 月 17 日 周三',ti:'雨后的午后',tm:'14:30',ex:'雨停了，楼下的桂花被冲得很干净。泡了壶茶，想起去年这时候也在写…',meta:'🌧 22° · 🙂 · 🖼 2',
+    body:'雨停了，楼下的桂花被冲得很干净，空气里都是甜味。泡了壶茶，坐在窗边发了会儿呆，想起去年这个时候也在写日记，那时在愁的事，现在看来都轻了。',photo:'窗外的桂花',rmeta:['🌧 22° 小雨','📍 杭州 · 西湖','🙂 平静'],tags:['#生活','#茶']},
+  {id:2,group:'今天 · 6 月 17 日 周三',ti:'晨跑后的念头',tm:'07:10',ex:'沿着河堤跑了五公里，天刚亮。脑子里冒出一个关于项目的想法…',meta:'☀ 18° · 📍 滨江',
+    body:'沿着河堤跑了五公里，天刚亮，江面起雾。跑步的时候脑子最清楚，冒出一个关于项目的想法，赶紧记下来。',photo:null,rmeta:['☀ 18°','📍 杭州 · 滨江'],tags:['#晨跑']},
+  {id:3,group:'昨天 · 6 月 16 日',ti:'夜读《人间词话》',tm:'23:02',ex:'"有境界则自成高格"…',
+    body:'"有境界则自成高格，自有名句。"读到这句停了很久。境界二字，说的何尝只是词。',photo:null,rmeta:['🌙 夜读'],tags:['#读书']},
+];
+const dayNote={dk:'六月十七日 · 周三',pl:'倦意还压在肩上，天边那抹晚霞，却替今天写好了温柔的结尾。'};
+let selId=1;
+
+function renderTimeline(){
+  const tl=document.getElementById('tl');let html='';let lastG=null;
+  entries.forEach(e=>{
+    if(e.group!==lastG){html+=`<div class="daygrp">${e.group}</div>`;lastG=e.group;}
+    html+=`<div class="card ${e.id===selId?'sel':''}" onclick="selectEntry(${e.id})">
+      <div class="row"><span class="ti">${e.ti}</span><span class="tm">${e.tm}</span></div>
+      <div class="ex">${e.ex}</div><div class="meta-mini">${e.meta?'<span>'+e.meta+'</span>':''}</div></div>`;
+  });
+  tl.innerHTML=html;
+}
+function renderReader(){
+  const e=entries.find(x=>x.id===selId);
+  document.getElementById('reader').innerHTML=`
+    <div class="daynote"><div class="dk">${dayNote.dk}</div><div class="pl">${dayNote.pl}</div></div>
+    <div class="bigdate"><span class="d">17</span><span class="s">六月 2026 · 周三<br>${e.tm}</span></div>
+    <div class="r-title">${e.ti}</div>
+    <div class="r-body">${e.body}</div>
+    ${e.photo?`<div class="r-photo">🖼 ${e.photo}</div>`:''}
+    <div class="r-meta">${e.rmeta.map(m=>`<span>${m}</span>`).join('')}
+      <span style="margin-left:auto;display:flex;gap:6px">${e.tags.map(t=>`<span class="pill">${t}</span>`).join('')}</span></div>`;
+}
+function selectEntry(id){selId=id;renderTimeline();renderReader();}
+function nav(v,el){
+  document.querySelectorAll('.nav').forEach(n=>n.classList.remove('on'));
+  if(el)el.classList.add('on');
+  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
+  document.getElementById('pane-'+v).classList.add('on');
+}
+
+/* calendar + heatmap */
+function buildStats(){
+  const cal=document.getElementById('cal');const wk=['日','一','二','三','四','五','六'];
+  let h=wk.map(w=>`<div class="w">${w}</div>`).join('');
+  const marked={2:1,3:1,5:1,6:1,9:1,10:1,11:1,12:1,13:1,16:1};
+  for(let i=0;i<1;i++)h+='<div></div>';
+  for(let d=1;d<=30;d++){
+    if(d===17)h+=`<div class="day today">${d}</div>`;
+    else if(marked[d])h+=`<div class="day">${d}<span class="mk"></span></div>`;
+    else h+=`<div class="day empty">${d}</div>`;
+  }
+  cal.innerHTML=h;
+  const heat=document.getElementById('heat');const cols=['rgba(0,0,0,.06)','#FAECE7','#F5C4B3','#F0997B','#D85A30'];
+  let seed=7;const rnd=()=>{seed=(seed*9301+49297)%233280;return seed/233280;};let hh='';
+  for(let c=0;c<52;c++)for(let r=0;r<7;r++){const lvl=Math.floor(Math.pow(rnd(),1.6)*5);hh+=`<span style="background:${cols[lvl]}"></span>`;}
+  heat.innerHTML=hh;
+}
+
+/* ritual */
+const lines=[
+  ['倦意还压在肩上，','天边那抹晚霞，','却替今天','写好了温柔的结尾。'],
+  ['加班到星子初上，','归途忽逢满天绯色，','一日的疲惫，','都被这晚霞轻轻接住。'],
+  ['原来再长的一天，','也抵不过抬头时，','那片毫无防备的','绚烂晚霞。']
+];
+let li=0;
+function openRitual(){
+  document.getElementById('r-step1').style.display='block';
+  document.getElementById('r-step2').style.display='none';
+  document.getElementById('r-inputzone').style.display='block';
+  document.getElementById('r-resultzone').style.display='none';
+  document.getElementById('ritual').classList.add('on');
+}
+function closeRitual(){document.getElementById('ritual').classList.remove('on');}
+function reveal(chunks){
+  const p=document.getElementById('poetic');p.innerHTML='';
+  document.getElementById('r-actions').style.display='none';
+  chunks.forEach((c,i)=>{const s=document.createElement('span');s.className='seg-rev';s.textContent=c;p.appendChild(s);
+    setTimeout(()=>s.classList.add('in'),70+i*240);});
+  setTimeout(()=>{const a=document.getElementById('r-actions');a.style.display='flex';},70+chunks.length*240+200);
+}
+function goPoetic(){
+  const iz=document.getElementById('r-inputzone');iz.style.transition='opacity .3s';iz.style.opacity='0';
+  setTimeout(()=>{iz.style.display='none';iz.style.opacity='1';
+    document.getElementById('r-resultzone').style.display='block';li=0;reveal(lines[0]);},300);
+}
+function reroll(){li=(li+1)%lines.length;reveal(lines[li]);}
+function goStep2(){
+  document.getElementById('s2-poetic').textContent=lines[li].join('');
+  document.getElementById('r-step1').style.display='none';
+  const s2=document.getElementById('r-step2');s2.style.display='flex';
+  const ks=document.querySelectorAll('.board-key');ks.forEach(k=>k.classList.remove('in'));
+  ks.forEach((k,i)=>setTimeout(()=>k.classList.add('in'),250+i*240));
+}
+function backStep1(){document.getElementById('r-step2').style.display='none';document.getElementById('r-step1').style.display='block';}
+document.querySelectorAll('.board-key').forEach(k=>k.addEventListener('click',()=>{
+  const names=['五年','日常唠叨','宝贝成长记录'];closeRitual();
+  toast('已在「'+names[k.dataset.i]+'」开始今天的记录');
+}));
+let tt;function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('on');
+  clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),2200);}
+
+renderTimeline();renderReader();buildStats();
+</script>
+</body>
+</html>

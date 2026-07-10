@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.deps/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+*.swp
+
+# 用户数据 & 敏感文件（绝不能进 git）
+AppData/
+dist/
+.sync-backup-*/
+*.dmg
+Release/*.p12
