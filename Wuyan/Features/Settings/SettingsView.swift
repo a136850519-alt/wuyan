@@ -45,6 +45,7 @@ struct SettingsView: View {
     @State private var babyBirthdayMessage: String?
     @State private var conflictSummaries: [UUID: EntrySummary] = [:]
     @State private var diagMessage: String?
+    @State private var mediaEvictMessage: String?
 
     var body: some View {
         Form {
@@ -295,6 +296,35 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("媒体磁盘") {
+                let totalSize = appState.mediaStore.totalMediaSize()
+                Text("本地媒体总大小：\(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))")
+                    .foregroundStyle(.secondary)
+                let yearSizes = appState.mediaStore.mediaSizeByYear()
+                if !yearSizes.isEmpty {
+                    ForEach(yearSizes.keys.sorted().reversed(), id: \.self) { year in
+                        HStack {
+                            Text("\(year) 年")
+                            Spacer()
+                            Text(ByteCountFormatter.string(fromByteCount: yearSizes[year] ?? 0, countStyle: .file))
+                                .foregroundStyle(.secondary)
+                            Button("清理本地") {
+                                evictYearMedia(year: year)
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(Palette.cinnabar)
+                        }
+                    }
+                }
+                if let mediaEvictMessage {
+                    Text(mediaEvictMessage)
+                        .foregroundStyle(.secondary)
+                }
+                Text("清理仅删除已上传远端的本地副本，远端数据不受影响。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("关于") {
                 Text("晤言 · Wuyan")
                     .font(WuyanFont.body(18))
@@ -535,6 +565,15 @@ struct SettingsView: View {
         }
         SecureSettings.save(cryptoPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
         cryptoMessage = cryptoEnabled ? "加密设置已保存。请牢记口令。" : "加密已关闭。"
+    }
+
+    private func evictYearMedia(year: Int) {
+        do {
+            let count = try appState.mediaStore.evictYearMedia(year: year)
+            mediaEvictMessage = "已清理 \(year) 年本地媒体 \(count) 个。"
+        } catch {
+            mediaEvictMessage = "清理失败：\(error.localizedDescription)"
+        }
     }
 
     private func loadConflictSummaries() {

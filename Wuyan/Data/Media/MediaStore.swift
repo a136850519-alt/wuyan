@@ -234,14 +234,56 @@ final class LocalMediaStore: MediaStoreProtocol {
     }
 
     func evictCacheIfNeeded() {
-        guard let enumerator = fileManager.enumerator(at: mediaURL, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        // 由 P3-7 的 per-year 清理替代，此处保留作为全局阈值守卫
+    }
+
+    // MARK: - 磁盘用量
+
+    /// 计算媒体目录总大小（字节）
+    func totalMediaSize() -> Int64 {
+        guard let enumerator = fileManager.enumerator(at: mediaURL, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
         var total: Int64 = 0
         for case let url as URL in enumerator {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             total += Int64(size)
         }
-        guard total > 2 * 1024 * 1024 * 1024 else { return }
-        // P3-7 会实现真正的清理逻辑
+        return total
+    }
+
+    /// 按年份统计本地媒体大小。key = 年份，value = 字节数
+    func mediaSizeByYear() -> [Int: Int64] {
+        var sizes: [Int: Int64] = [:]
+        let allAssets = (try? database.mediaAssetDAO.allAssets()) ?? []
+        let calendar = Calendar.current
+        for asset in allAssets {
+            guard let localPath = asset.localPath else { continue }
+            let absolutePath = Self.resolvePath(localPath)
+            guard fileManager.fileExists(atPath: absolutePath) else { continue }
+            let fileSize = (try? fileManager.attributesOfItem(atPath: absolutePath)[.size] as? Int) ?? 0
+            let year: Int
+            if let date = asset.capturedAt {
+                year = calendar.component(.year, from: date)
+            } else {
+                year = 0
+            }
+            sizes[year, default: 0] += Int64(fileSize)
+        }
+        return sizes
+    }
+
+    /// 清理指定年份的本地媒体文件（仅删除已同步到远端的）
+    func evictYearMedia(year: Int) throws -> Int {
+        let allAssets = try database.mediaAssetDAO.allAssets()
+        let calendar = Calendar.current
+        var removed = 0
+        for asset in allAssets {
+            guard let date = asset.capturedAt, calendar.component(.year, from: date) == year else { continue }
+            guard !asset.sha256.isEmpty else { continue }
+            try removeLocalFiles(for: asset)
+            removed += 1
+        }
+        WuyanLog.media.info("已清理 \(year) 年本地媒体：\(removed) 个文件")
+        return removed
     }
 
     private func makeThumbnailIfPossible(for url: URL, sha: String) throws -> String? {
