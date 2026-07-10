@@ -4,8 +4,8 @@ struct OnboardingView: View {
     @EnvironmentObject private var appState: AppState
     @Binding var isPresented: Bool
     @State private var step = 0
-    @AppStorage("settings.webdav.baseURL") private var webDAVBaseURL = "https://nas.local:5006"
-    @AppStorage("settings.webdav.username") private var webDAVUsername = ""
+    @AppStorage(SettingKey.webDAVBaseURL) private var webDAVBaseURL = "https://nas.local:5006"
+    @AppStorage(SettingKey.webDAVUsername) private var webDAVUsername = ""
     @State private var webDAVPassword = ""
     @State private var testMessage: String?
     @State private var saveMessage: String?

@@ -169,7 +169,7 @@ struct RitualView: View {
     }
 
     private var isCloudAISelected: Bool {
-        let provider = UserDefaults.standard.string(forKey: "settings.ai.provider") ?? "zhipu"
+        let provider = AppSettings.aiProvider
         return provider == "zhipu" || provider == "claude"
     }
 }

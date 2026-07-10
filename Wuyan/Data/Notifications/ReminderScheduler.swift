@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 
 final class ReminderScheduler {
-    private let skipWrittenDaysKey = "settings.reminder.skipWrittenDays"
+    private let skipWrittenDaysKey = SettingKey.reminderSkipWrittenDays
     /// 注册的天数范围
     private let lookaheadDays = 7
 

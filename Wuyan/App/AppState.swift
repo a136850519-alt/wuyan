@@ -61,8 +61,8 @@ final class AppState: ObservableObject {
         self.mediaStore = try! LocalMediaStore(database: database)
         self.aiService = AIService(
             provider: AppState.makeAIProviderFromDefaults(),
-            isEnabled: UserDefaults.standard.bool(forKey: "settings.ai.enabled"),
-            ritualPolishingEnabled: UserDefaults.standard.object(forKey: "settings.ai.ritual") as? Bool ?? true
+            isEnabled: AppSettings.aiEnabled,
+            ritualPolishingEnabled: AppSettings.aiRitual
         )
         self.aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
         let stored = UserDefaults.standard.array(forKey: Self.archivedYearsKey) as? [Int] ?? []
@@ -148,7 +148,7 @@ final class AppState: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        if UserDefaults.standard.bool(forKey: "settings.crypto.enabled") {
+        if AppSettings.cryptoEnabled {
             let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
             if passphrase.isEmpty {
                 syncMessage = nil
@@ -343,7 +343,7 @@ final class AppState: ObservableObject {
     }
 
     func enrichEntryMetadataIfNeeded(_ entryId: UUID) {
-        guard UserDefaults.standard.object(forKey: "settings.metadata.enabled") as? Bool ?? true else { return }
+        guard AppSettings.metadataEnabled else { return }
         Task {
             guard let location = await locationMetadata.requestLocation(),
                   var entry = try? entries.entry(id: entryId)
@@ -358,7 +358,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshRemindersForToday() {
-        guard UserDefaults.standard.bool(forKey: "settings.reminder.enabled") else { return }
+        guard AppSettings.reminderEnabled else { return }
         let times = Self.reminderTimesFromDefaults()
         Task {
             let today = Date().dayKey
@@ -369,41 +369,40 @@ final class AppState: ObservableObject {
 
     func reloadAISettings() {
         aiService.provider = Self.makeAIProviderFromDefaults()
-        aiService.isEnabled = UserDefaults.standard.bool(forKey: "settings.ai.enabled")
-        aiService.ritualPolishingEnabled = UserDefaults.standard.object(forKey: "settings.ai.ritual") as? Bool ?? true
+        aiService.isEnabled = AppSettings.aiEnabled
+        aiService.ritualPolishingEnabled = AppSettings.aiRitual
         aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
     }
 
     private static func makeAIProviderFromDefaults() -> AIProvider? {
-        let defaults = UserDefaults.standard
-        let provider = defaults.string(forKey: "settings.ai.provider") ?? "zhipu"
+        let provider = AppSettings.aiProvider
         if provider == "zhipu" {
             let endpoint = urlFromDefaults(
-                key: "settings.zhipu.endpoint",
-                fallback: "https://open.bigmodel.cn/api/paas/v4"
+                key: SettingKey.zhipuEndpoint,
+                fallback: AppSettings.zhipuEndpoint
             )
             return ZhipuProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey),
-                model: defaults.string(forKey: "settings.zhipu.model") ?? "glm-5.2",
+                model: AppSettings.zhipuModel,
                 endpoint: endpoint
             )
         }
         if provider == "claude" {
             let endpoint = urlFromDefaults(
-                key: "settings.claude.endpoint",
-                fallback: "https://api.anthropic.com/v1/messages"
+                key: SettingKey.claudeEndpoint,
+                fallback: AppSettings.claudeEndpoint
             )
             return ClaudeProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey),
-                model: defaults.string(forKey: "settings.claude.model") ?? "claude-sonnet-5",
+                model: AppSettings.claudeModel,
                 endpoint: endpoint
             )
         }
-        let endpoint = URL(string: defaults.string(forKey: "settings.ollama.endpoint") ?? "http://localhost:11434") ?? URL(string: "http://localhost:11434")!
+        let endpoint = URL(string: AppSettings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
         return OllamaProvider(
             endpoint: endpoint,
-            model: defaults.string(forKey: "settings.ollama.model") ?? "qwen2.5",
-            embeddingModel: defaults.string(forKey: "settings.ollama.embeddingModel") ?? "nomic-embed-text"
+            model: AppSettings.ollamaModel,
+            embeddingModel: AppSettings.ollamaEmbeddingModel
         )
     }
 
@@ -414,34 +413,33 @@ final class AppState: ObservableObject {
     }
 
     static func makeRemoteStorageProviderFromDefaults() throws -> any RemoteStorageProvider {
-        let defaults = UserDefaults.standard
-        let backend = defaults.string(forKey: "settings.storage.backend") ?? "webDAV"
+        let backend = AppSettings.storageBackend
         if backend == "s3" {
-            guard let endpoint = URL(string: defaults.string(forKey: "settings.s3.endpoint") ?? "") else {
+            guard let endpoint = URL(string: AppSettings.s3Endpoint) else {
                 throw RemoteStorageError.invalidBaseURL
             }
-            let bucket = defaults.string(forKey: "settings.s3.bucket") ?? ""
+            let bucket = AppSettings.s3Bucket
             guard !bucket.isEmpty else { throw RemoteStorageError.missingConfiguration("S3 bucket") }
             let secretKey = SecureSettings.load(SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey)
-            guard !(defaults.string(forKey: "settings.s3.accessKey") ?? "").isEmpty, !secretKey.isEmpty else {
+            guard !AppSettings.s3AccessKey.isEmpty, !secretKey.isEmpty else {
                 throw RemoteStorageError.missingCredentials
             }
             return S3Provider(
                 endpoint: endpoint,
                 bucket: bucket,
-                region: defaults.string(forKey: "settings.s3.region") ?? "us-east-1",
-                accessKey: defaults.string(forKey: "settings.s3.accessKey") ?? "",
+                region: AppSettings.s3Region,
+                accessKey: AppSettings.s3AccessKey,
                 secretKey: secretKey,
-                pathStyle: defaults.object(forKey: "settings.s3.pathStyle") as? Bool ?? true
+                pathStyle: AppSettings.s3PathStyle
             )
         }
 
-        guard let url = URL(string: defaults.string(forKey: "settings.webdav.baseURL") ?? "") else {
+        guard let url = URL(string: AppSettings.webDAVBaseURL) else {
             throw RemoteStorageError.invalidBaseURL
         }
-        let username = defaults.string(forKey: "settings.webdav.username")
+        let username = AppSettings.webDAVUsername
         let password = SecureSettings.load(SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
-        guard username?.isEmpty == false, !password.isEmpty else {
+        guard !username.isEmpty, !password.isEmpty else {
             throw RemoteStorageError.missingCredentials
         }
         return WebDAVProvider(
@@ -453,41 +451,35 @@ final class AppState: ObservableObject {
 
     /// 基于 backend+baseURL+bucket 计算后端指纹（SHA256 前8位），用于区分不同远端配置
     static func backendFingerprint() -> String {
-        let defaults = UserDefaults.standard
-        let backend = defaults.string(forKey: "settings.storage.backend") ?? "webDAV"
+        let backend = AppSettings.storageBackend
         var identity: String
         if backend == "s3" {
-            let endpoint = defaults.string(forKey: "settings.s3.endpoint") ?? ""
-            let bucket = defaults.string(forKey: "settings.s3.bucket") ?? ""
-            identity = "s3:\(endpoint):\(bucket)"
+            identity = "s3:\(AppSettings.s3Endpoint):\(AppSettings.s3Bucket)"
         } else {
-            let baseURL = defaults.string(forKey: "settings.webdav.baseURL") ?? ""
-            let username = defaults.string(forKey: "settings.webdav.username") ?? ""
-            identity = "webdav:\(baseURL):\(username)"
+            identity = "webdav:\(AppSettings.webDAVBaseURL):\(AppSettings.webDAVUsername)"
         }
         let digest = CryptoKit.SHA256.hash(data: Data(identity.utf8))
         return digest.compactMap { String(format: "%02x", $0) }.prefix(8).joined()
     }
 
     static func makeSyncCryptoFromDefaults() -> SyncCrypto? {
-        guard UserDefaults.standard.bool(forKey: "settings.crypto.enabled") else { return nil }
+        guard AppSettings.cryptoEnabled else { return nil }
         let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
         guard !passphrase.isEmpty else { return nil }
-        let saltKey = "settings.crypto.salt"
         let salt: Data
-        if let existing = UserDefaults.standard.string(forKey: saltKey), let data = Data(base64Encoded: existing) {
+        if let existing = AppSettings.cryptoSalt, let data = Data(base64Encoded: existing) {
             salt = data
         } else {
             var bytes = [UInt8](repeating: 0, count: 16)
             _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
             salt = Data(bytes)
-            UserDefaults.standard.set(salt.base64EncodedString(), forKey: saltKey)
+            UserDefaults.standard.set(salt.base64EncodedString(), forKey: SettingKey.cryptoSalt)
         }
         return try? SyncCrypto(passphrase: passphrase, salt: salt)
     }
 
     static func reminderTimesFromDefaults() -> [DateComponents] {
-        let stored = UserDefaults.standard.array(forKey: "settings.reminder.times") as? [String] ?? ["21:30"]
+        let stored = AppSettings.reminderTimes
         return stored.compactMap { value in
             let parts = value.split(separator: ":").compactMap { Int(String($0)) }
             guard parts.count == 2 else { return nil }
@@ -499,7 +491,7 @@ final class AppState: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm"
-        UserDefaults.standard.set(dates.map { formatter.string(from: $0) }, forKey: "settings.reminder.times")
+        UserDefaults.standard.set(dates.map { formatter.string(from: $0) }, forKey: SettingKey.reminderTimes)
     }
 
     static func year(fromDayKey dayKey: String) -> Int {
