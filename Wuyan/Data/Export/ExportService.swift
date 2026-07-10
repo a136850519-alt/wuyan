@@ -16,6 +16,7 @@ final class ExportService {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let mediaDirectory = directory.appendingPathComponent("media", isDirectory: true)
         try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+        var usedFilenames = Set<String>()
         for entry in entries {
             let filename = "\(entry.dayDate)-\(entry.id.uuidString).md"
             let url = directory.appendingPathComponent(filename)
@@ -23,13 +24,30 @@ final class ExportService {
             for asset in assets {
                 if let localPath = asset.localPath {
                     let absolutePath = LocalMediaStore.resolvePath(localPath)
-                    let destination = mediaDirectory.appendingPathComponent(asset.filename)
+                    // 用 sha256 前8位前缀防冲突：IMG_0001.jpg → a1b2c3d4-IMG_0001.jpg
+                    let safeName: String
+                    let prefix = String(asset.sha256.prefix(8))
+                    let candidate = "\(prefix)-\(asset.filename)"
+                    if usedFilenames.insert(candidate).inserted {
+                        safeName = candidate
+                    } else {
+                        // 极端情况：同 sha256 同名（不可能但防御性编码）
+                        safeName = "\(prefix)-\(asset.id.uuidString.prefix(8))-\(asset.filename)"
+                        usedFilenames.insert(safeName)
+                    }
+                    let destination = mediaDirectory.appendingPathComponent(safeName)
                     if !FileManager.default.fileExists(atPath: destination.path) {
                         try? FileManager.default.copyItem(at: URL(fileURLWithPath: absolutePath), to: destination)
                     }
                 }
             }
-            let mediaLinks = assets.map { "![\($0.filename)](media/\($0.filename))" }.joined(separator: "\n")
+            // Markdown 链接也需要同步使用安全文件名
+            let mediaLinks = assets.compactMap { asset -> String? in
+                guard asset.localPath != nil else { return nil }
+                let prefix = String(asset.sha256.prefix(8))
+                let safeName = "\(prefix)-\(asset.filename)"
+                return "![\(asset.filename)](media/\(safeName))"
+            }.joined(separator: "\n")
             let frontmatter = """
             ---
             id: \(entry.id.uuidString)
