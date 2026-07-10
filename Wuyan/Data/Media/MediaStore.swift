@@ -3,6 +3,7 @@ import AVFoundation
 import CryptoKit
 import Foundation
 import ImageIO
+import os
 import UniformTypeIdentifiers
 
 protocol MediaStoreProtocol {
@@ -64,12 +65,14 @@ final class LocalMediaStore: MediaStoreProtocol {
     private func migrateFromCachesIfNeeded() throws {
         guard !UserDefaults.standard.bool(forKey: Self.migrationKey) else { return }
 
+        WuyanLog.media.info("开始媒体迁移：从 Caches 迁移到 Application Support")
         let cachesURL = try fileManager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
         let oldMediaURL = cachesURL.appendingPathComponent("Wuyan/media", isDirectory: true)
 
         guard fileManager.fileExists(atPath: oldMediaURL.path) else {
             // 没有旧 Caches 媒体文件，标记已迁移即可
             UserDefaults.standard.set(true, forKey: Self.migrationKey)
+            WuyanLog.media.info("无旧 Caches 媒体，跳过迁移")
             return
         }
 
@@ -88,6 +91,7 @@ final class LocalMediaStore: MediaStoreProtocol {
         try migrateDatabasePaths()
 
         UserDefaults.standard.set(true, forKey: Self.migrationKey)
+        WuyanLog.media.info("媒体迁移完成")
     }
 
     private func migrateDirectoryContents(from source: URL, to destination: URL) {
@@ -125,6 +129,7 @@ final class LocalMediaStore: MediaStoreProtocol {
     // MARK: - MediaStoreProtocol
 
     func importMedia(_ url: URL, entryId: UUID) async throws -> MediaAsset {
+        WuyanLog.media.info("导入媒体：\(url.lastPathComponent) → 条目 \(entryId.uuidString.prefix(8))")
         let data = try Data(contentsOf: url)
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         let ext = url.pathExtension
@@ -153,6 +158,7 @@ final class LocalMediaStore: MediaStoreProtocol {
             entry.mediaIds.append(asset.id)
             try database.entryDAO.save(entry)
         }
+        WuyanLog.media.info("导入媒体完成：\(sha.prefix(8))，\(data.count) 字节")
         return asset
     }
 
@@ -277,6 +283,7 @@ final class LocalMediaStore: MediaStoreProtocol {
                 CGImageDestinationFinalize(destination)
                 return Self.toRelativePath(outputURL.path)
             } catch {
+                WuyanLog.media.warning("视频缩略图生成失败：\(error.localizedDescription)")
                 return nil
             }
         }

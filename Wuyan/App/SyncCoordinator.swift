@@ -21,6 +21,7 @@ final class SyncCoordinator: ObservableObject {
 
     func syncNow(archivedYears: Set<Int>) {
         guard syncProgress == nil else { return }
+        WuyanLog.sync.info("开始同步，归档年份: \(archivedYears.map(String.init).joined(separator: ","))")
         syncMessage = "同步中…"
         syncProgress = SyncProgress(phase: "准备同步", completedUnitCount: 0, totalUnitCount: 1)
         syncConflicts = []
@@ -65,12 +66,14 @@ final class SyncCoordinator: ObservableObject {
                     let conflictText = report.conflicts.isEmpty ? "" : "，冲突 \(report.conflicts.count)"
                     self.syncMessage = "同步完成：推送 \(report.pushed)，拉取 \(report.pulled)，媒体 \(report.mediaUploaded)\(conflictText)。"
                     self.syncProgress = nil
+                    WuyanLog.sync.info("同步完成：推送\(report.pushed)，拉取\(report.pulled)，媒体\(report.mediaUploaded)，冲突\(report.conflicts.count)")
                 }
             } catch {
                 await MainActor.run {
                     self.syncMessage = nil
                     self.syncProgress = nil
                     self.errorMessage = error.localizedDescription
+                    WuyanLog.sync.error("同步失败：\(error.localizedDescription)")
                 }
             }
         }

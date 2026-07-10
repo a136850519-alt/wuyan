@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
@@ -43,6 +44,7 @@ struct SettingsView: View {
     @State private var babyBirthday = Date()
     @State private var babyBirthdayMessage: String?
     @State private var conflictSummaries: [UUID: EntrySummary] = [:]
+    @State private var diagMessage: String?
 
     var body: some View {
         Form {
@@ -301,6 +303,13 @@ struct SettingsView: View {
                 Text("朱砂 #D85A30 · 霞鹜文楷")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("导出诊断日志") {
+                    exportDiagnosticLog()
+                }
+                if let diagMessage {
+                    Text(diagMessage)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -534,5 +543,43 @@ struct SettingsView: View {
             return
         }
         conflictSummaries = (try? appState.entries.summaries(for: appState.syncConflicts)) ?? [:]
+    }
+
+    private func exportDiagnosticLog() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "导出诊断日志"
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+
+        Task {
+            do {
+                let store = try OSLogStore(scope: .currentProcessIdentifier)
+                let oneHourAgo = store.position(date: Date().addingTimeInterval(-3600))
+                let entries = try store.getEntries(at: oneHourAgo)
+                    .compactMap { $0 as? OSLogEntryLog }
+                    .filter { $0.subsystem == "com.wuyan.app" }
+
+                var lines: [String] = ["# 晤言诊断日志", "# 导出时间：\(Date())", ""]
+                for entry in entries {
+                    let category = entry.category
+                    let level = entry.level.rawValue
+                    let time = entry.date.formatted(.iso8601)
+                    let msg = entry.composedMessage
+                    lines.append("[\(time)] [\(category)] [\(level)] \(msg)")
+                }
+
+                let outputURL = directory.appendingPathComponent("wuyan-diagnostic-\(Int(Date().timeIntervalSince1970)).log")
+                try lines.joined(separator: "\n").write(to: outputURL, atomically: true, encoding: .utf8)
+                await MainActor.run {
+                    diagMessage = "已导出 \(entries.count) 条日志。"
+                }
+            } catch {
+                await MainActor.run {
+                    diagMessage = "导出失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 final class AIService: PoeticGenerator {
     var provider: AIProvider?
@@ -21,7 +22,12 @@ final class AIService: PoeticGenerator {
     }
 
     func line(from rawSummary: String) async -> String {
-        (try? await dayPoeticLine(from: rawSummary)) ?? rawSummary
+        do {
+            return try await dayPoeticLine(from: rawSummary)
+        } catch {
+            WuyanLog.ai.warning("诗行润色失败：\(error.localizedDescription)")
+            return rawSummary
+        }
     }
 
     func dayPoeticLine(from rawSummary: String) async throws -> String {
@@ -32,18 +38,28 @@ final class AIService: PoeticGenerator {
             AIMessage(role: .system, content: "你是私人日记助手。把用户的一句日常总结润成一句中文批注：温和、克制、有诗情，不说教、不夸张，只输出一句。"),
             AIMessage(role: .user, content: rawSummary)
         ]
-        let result = try await provider.complete(messages, options: AIOptions(temperature: 0.75, maxTokens: 80))
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let result = try await provider.complete(messages, options: AIOptions(temperature: 0.75, maxTokens: 80))
+            return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            WuyanLog.ai.error("诗行生成请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func writingPrompt(context: WritingContext) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
         let safeEntries = filterCloudAllowed(context.recentEntries)
         let recent = safeEntries.prefix(5).map { $0.body }.joined(separator: "\n")
-        return try await provider.complete([
-            AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
-            AIMessage(role: .user, content: "最近内容：\n\(recent)")
-        ], options: AIOptions(temperature: 0.8, maxTokens: 300))
+        do {
+            return try await provider.complete([
+                AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
+                AIMessage(role: .user, content: "最近内容：\n\(recent)")
+            ], options: AIOptions(temperature: 0.8, maxTokens: 300))
+        } catch {
+            WuyanLog.ai.error("写作引导请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func streamWritingPrompt(context: WritingContext) -> AsyncThrowingStream<String, Error> {
@@ -74,10 +90,15 @@ final class AIService: PoeticGenerator {
         guard isEnabled, let provider else { throw AIError.disabled }
         let safeEntries = filterCloudAllowed(entries)
         let body = safeEntries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
-        return try await provider.complete([
-            AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
-            AIMessage(role: .user, content: body)
-        ], options: AIOptions(temperature: 0.55, maxTokens: 900))
+        do {
+            return try await provider.complete([
+                AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
+                AIMessage(role: .user, content: body)
+            ], options: AIOptions(temperature: 0.55, maxTokens: 900))
+        } catch {
+            WuyanLog.ai.error("\(period.rawValue)回顾请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func analyzeMood(entries: [Entry]) async throws -> MoodTrend {
@@ -90,21 +111,31 @@ final class AIService: PoeticGenerator {
         guard isEnabled, let provider else { throw AIError.disabled }
         let safeEntries = filterCloudAllowed([entry])
         guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
-        return try await provider.complete([
-            AIMessage(role: .system, content: "为这篇日记起一个克制的中文短标题，只输出标题。"),
-            AIMessage(role: .user, content: entry.body)
-        ], options: AIOptions(temperature: 0.5, maxTokens: 40))
+        do {
+            return try await provider.complete([
+                AIMessage(role: .system, content: "为这篇日记起一个克制的中文短标题，只输出标题。"),
+                AIMessage(role: .user, content: entry.body)
+            ], options: AIOptions(temperature: 0.5, maxTokens: 40))
+        } catch {
+            WuyanLog.ai.error("标题建议请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func suggestTags(_ entry: Entry) async throws -> [String] {
         guard isEnabled, let provider else { throw AIError.disabled }
         let safeEntries = filterCloudAllowed([entry])
         guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
-        let result = try await provider.complete([
-            AIMessage(role: .system, content: "从日记中提取 3 到 6 个中文标签，用逗号分隔，只输出标签。"),
-            AIMessage(role: .user, content: entry.body)
-        ], options: AIOptions(temperature: 0.3, maxTokens: 80))
-        return result.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        do {
+            let result = try await provider.complete([
+                AIMessage(role: .system, content: "从日记中提取 3 到 6 个中文标签，用逗号分隔，只输出标签。"),
+                AIMessage(role: .user, content: entry.body)
+            ], options: AIOptions(temperature: 0.3, maxTokens: 80))
+            return result.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        } catch {
+            WuyanLog.ai.error("标签建议请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func ask(_ question: String, entries: [Entry]) async throws -> AnswerWithSources {
@@ -120,10 +151,15 @@ final class AIService: PoeticGenerator {
             }
         }
         let context = chunks.map { "[\($0.entryId.uuidString)] \($0.text)" }.joined(separator: "\n")
-        let answer = try await provider.complete([
-            AIMessage(role: .system, content: "根据提供的私人日记片段回答问题，答案后不编造来源。"),
-            AIMessage(role: .user, content: "问题：\(question)\n片段：\n\(context)")
-        ], options: AIOptions(temperature: 0.4, maxTokens: 800))
-        return AnswerWithSources(answer: answer, sourceEntryIds: Array(Set(chunks.map(\.entryId))))
+        do {
+            let answer = try await provider.complete([
+                AIMessage(role: .system, content: "根据提供的私人日记片段回答问题，答案后不编造来源。"),
+                AIMessage(role: .user, content: "问题：\(question)\n片段：\n\(context)")
+            ], options: AIOptions(temperature: 0.4, maxTokens: 800))
+            return AnswerWithSources(answer: answer, sourceEntryIds: Array(Set(chunks.map(\.entryId))))
+        } catch {
+            WuyanLog.ai.error("AI 问答请求失败：\(error.localizedDescription)")
+            throw error
+        }
     }
 }

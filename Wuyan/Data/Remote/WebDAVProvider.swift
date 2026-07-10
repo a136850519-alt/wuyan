@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct WebDAVProvider: RemoteStorageProvider {
     private let baseURL: URL
@@ -258,6 +259,7 @@ struct WebDAVProvider: RemoteStorageProvider {
             if let http = response as? HTTPURLResponse,
                (http.statusCode == 423 || [500, 502, 503, 504].contains(http.statusCode)),
                attempt < lockedRetries {
+                WuyanLog.sync.warning("WebDAV \(method) \(path) → \(http.statusCode)，第\(attempt + 1)次重试")
                 lastResponse = response
                 try await Task.sleep(for: .milliseconds(350 * (attempt + 1)))
                 continue
@@ -271,9 +273,11 @@ struct WebDAVProvider: RemoteStorageProvider {
 
     private func validate(_ response: URLResponse, method: String, path: String, allowed: Set<Int>) throws {
         guard let http = response as? HTTPURLResponse else {
+            WuyanLog.sync.error("WebDAV \(method) \(path) → 非 HTTP 响应")
             throw RemoteStorageError.unexpectedStatus(-1)
         }
         guard allowed.contains(http.statusCode) else {
+            WuyanLog.sync.error("WebDAV \(method) \(path) → \(http.statusCode)（允许：\(allowed.sorted().map(String.init).joined(separator: ","))）")
             throw RemoteStorageError.requestFailed(method: method, path: path, statusCode: http.statusCode)
         }
     }
