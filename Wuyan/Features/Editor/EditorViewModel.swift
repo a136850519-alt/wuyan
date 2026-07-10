@@ -114,6 +114,8 @@ final class EditorViewModel: ObservableObject {
             self.isDirty = false
             self.lastSavedAt = Date()
             appState.refreshRemindersForToday()
+            // 通知自动同步防抖：编辑保存后 5 分钟自动同步
+            appState.syncCoordinator.notifyEditCompleted()
         } catch {
             appState.errorMessage = error.localizedDescription
         }

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 同步/归档/下载的管理器，从 AppState 中剥离。
 /// @MainActor ObservableObject，RootView 注入环境。
@@ -12,6 +13,51 @@ final class SyncCoordinator: ObservableObject {
     @Published var syncProgress: SyncProgress?
     @Published var syncConflicts: [UUID] = []
     @Published var errorMessage: String?
+
+    // MARK: - 自动同步
+
+    /// 编辑防抖定时器：上次保存后 5 分钟自动同步
+    private var editDebounceTask: Task<Void, Never>?
+    private static let editDebounceInterval: Duration = .seconds(300) // 5 minutes
+
+    /// 启动后自动同步延迟
+    private static let startupSyncDelay: Duration = .seconds(10)
+
+    /// 通知编辑已完成，触发防抖自动同步
+    func notifyEditCompleted() {
+        editDebounceTask?.cancel()
+        editDebounceTask = Task {
+            try? await Task.sleep(for: Self.editDebounceInterval)
+            guard !Task.isCancelled else { return }
+            WuyanLog.sync.info("编辑防抖触发自动同步")
+            autoSyncIfConfigured()
+        }
+    }
+
+    /// 启动后延迟自动同步（由 WuyanApp.onAppear 调用一次）
+    func scheduleStartupSync() {
+        Task {
+            try? await Task.sleep(for: Self.startupSyncDelay)
+            guard !Task.isCancelled else { return }
+            WuyanLog.sync.info("启动后延迟自动同步")
+            autoSyncIfConfigured()
+        }
+    }
+
+    /// 系统从睡眠恢复后自动同步
+    func handleWakeFromSleep() {
+        WuyanLog.sync.info("系统从睡眠恢复，触发自动同步")
+        autoSyncIfConfigured()
+    }
+
+    /// 仅在已配置存储后端时执行自动同步
+    private func autoSyncIfConfigured() {
+        // 如果没配置 WebDAV/S3，静默跳过
+        guard let _ = try? ProviderFactory.makeRemoteStorageProvider() else { return }
+        guard syncProgress == nil else { return } // 正在同步中，不重复触发
+        let archivedYears = UserDefaults.standard.array(forKey: "archive.years") as? [Int] ?? []
+        syncNow(archivedYears: Set(archivedYears))
+    }
 
     init(database: AppDatabase) {
         self.db = database

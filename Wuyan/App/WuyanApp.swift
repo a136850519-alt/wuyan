@@ -28,8 +28,16 @@ struct WuyanApp: App {
                 .environmentObject(appState)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(WindowMaximizer())
+                .onAppear {
+                    // 启动后 10 秒自动同步
+                    appState.syncCoordinator.scheduleStartupSync()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     NotificationCenter.default.post(name: .wuyanWillTerminate, object: nil)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+                    // 系统从睡眠恢复后自动同步
+                    appState.syncCoordinator.handleWakeFromSleep()
                 }
         }
         .commands {
