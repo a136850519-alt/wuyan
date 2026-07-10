@@ -468,6 +468,7 @@ actor SyncEngine {
         var newlyUploaded: [String] = []
         for asset in assets {
             guard let localPath = asset.localPath else { continue }
+            let absoluteLocalPath = LocalMediaStore.resolvePath(localPath)
             let remotePath = crypto == nil
                 ? SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
                 : SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
@@ -478,9 +479,9 @@ actor SyncEngine {
                     let parent = (remotePath as NSString).deletingLastPathComponent
                     try await provider.mkcolRecursive(parent + "/")
                     if crypto == nil {
-                        try await provider.putResumable(remotePath, fileURL: URL(fileURLWithPath: localPath), chunkSize: 8 * 1024 * 1024)
+                        try await provider.putResumable(remotePath, fileURL: URL(fileURLWithPath: absoluteLocalPath), chunkSize: 8 * 1024 * 1024)
                     } else {
-                        let data = try Data(contentsOf: URL(fileURLWithPath: localPath))
+                        let data = try Data(contentsOf: URL(fileURLWithPath: absoluteLocalPath))
                         try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
                     }
                     uploaded += 1
@@ -490,11 +491,12 @@ actor SyncEngine {
             }
 
             if let thumbnailPath = asset.thumbnailPath {
+                let absoluteThumbnailPath = LocalMediaStore.resolvePath(thumbnailPath)
                 let thumbnailRemotePath = SyncPaths.thumbnailPath(sha256: asset.sha256)
                 if !cache.contains(thumbnailRemotePath) {
                     if !(try await provider.exists(thumbnailRemotePath)) {
                         try await provider.mkcolRecursive("/Wuyan/media/thumbnails/")
-                        try await provider.putChunked(thumbnailRemotePath, fileURL: URL(fileURLWithPath: thumbnailPath), chunkSize: 512 * 1024)
+                        try await provider.putChunked(thumbnailRemotePath, fileURL: URL(fileURLWithPath: absoluteThumbnailPath), chunkSize: 512 * 1024)
                         uploaded += 1
                     }
                     newlyUploaded.append(thumbnailRemotePath)

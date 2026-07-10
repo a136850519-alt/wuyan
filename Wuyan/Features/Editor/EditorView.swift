@@ -426,7 +426,7 @@ private struct MediaThumb: View {
 
     var body: some View {
         Group {
-            if let path = asset.thumbnailPath, let image = NSImage(contentsOfFile: path) {
+            if let path = asset.thumbnailPath, let image = NSImage(contentsOfFile: LocalMediaStore.resolvePath(path) ?? path) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()

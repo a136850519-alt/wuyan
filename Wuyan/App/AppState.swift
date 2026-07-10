@@ -500,8 +500,11 @@ final class AppState: ObservableObject {
     }
 
     func downloadMediaIfNeeded(_ asset: MediaAsset) async throws -> URL? {
-        if let localPath = asset.localPath, FileManager.default.fileExists(atPath: localPath) {
-            return URL(fileURLWithPath: localPath)
+        if let localPath = asset.localPath {
+            let absolutePath = LocalMediaStore.resolvePath(localPath)
+            if FileManager.default.fileExists(atPath: absolutePath) {
+                return URL(fileURLWithPath: absolutePath)
+            }
         }
 
         let provider = try Self.makeRemoteStorageProviderFromDefaults()
@@ -522,8 +525,11 @@ final class AppState: ObservableObject {
     }
 
     private func downloadThumbnailIfNeeded(_ asset: MediaAsset) async throws -> Bool {
-        if let thumbnailPath = asset.thumbnailPath, FileManager.default.fileExists(atPath: thumbnailPath) {
-            return true
+        if let thumbnailPath = asset.thumbnailPath {
+            let absolutePath = LocalMediaStore.resolvePath(thumbnailPath)
+            if FileManager.default.fileExists(atPath: absolutePath) {
+                return true
+            }
         }
 
         let provider = try Self.makeRemoteStorageProviderFromDefaults()

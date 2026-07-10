@@ -67,4 +67,37 @@ struct MediaAssetDAO {
             }
         }
     }
+
+    /// 迁移：将 localPath / thumbnailPath 从绝对路径转换为相对路径。
+    /// converter 闭包接收绝对路径，返回转换后的相对路径（无法转换时返回原路径）。
+    func migratePathsToRelative(converter: (String) -> String) throws {
+        try writer.write { db in
+            // 逐行读取并转换，只更新有值的行
+            let rows = try Row.fetchAll(db, sql: "SELECT id, localPath, thumbnailPath FROM media_asset WHERE localPath IS NOT NULL OR thumbnailPath IS NOT NULL")
+            for row in rows {
+                let id: String = row["id"]
+                var updates: [String] = []
+                var args: [String] = []
+
+                if let localPath: String = row["localPath"] {
+                    let converted = converter(localPath)
+                    if converted != localPath {
+                        updates.append("localPath = ?")
+                        args.append(converted)
+                    }
+                }
+                if let thumbnailPath: String = row["thumbnailPath"] {
+                    let converted = converter(thumbnailPath)
+                    if converted != thumbnailPath {
+                        updates.append("thumbnailPath = ?")
+                        args.append(converted)
+                    }
+                }
+                if !updates.isEmpty {
+                    args.append(id)
+                    try db.execute(sql: "UPDATE media_asset SET \(updates.joined(separator: ", ")) WHERE id = ?", arguments: StatementArguments(args))
+                }
+            }
+        }
+    }
 }

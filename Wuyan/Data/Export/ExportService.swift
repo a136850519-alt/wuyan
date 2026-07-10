@@ -13,9 +13,10 @@ final class ExportService {
             let assets = (try? mediaDAO?.allAssets(for: entry.mediaIds)) ?? []
             for asset in assets {
                 if let localPath = asset.localPath {
+                    let absolutePath = LocalMediaStore.resolvePath(localPath)
                     let destination = mediaDirectory.appendingPathComponent(asset.filename)
                     if !FileManager.default.fileExists(atPath: destination.path) {
-                        try? FileManager.default.copyItem(at: URL(fileURLWithPath: localPath), to: destination)
+                        try? FileManager.default.copyItem(at: URL(fileURLWithPath: absolutePath), to: destination)
                     }
                 }
             }
