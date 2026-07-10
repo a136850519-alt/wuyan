@@ -29,11 +29,18 @@ struct SidebarView: View {
 
             Section("年份") {
                 ForEach(years, id: \.self) { year in
-                    Label(String(year), systemImage: expandedYears.contains(year) ? "chevron.down" : "chevron.right")
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                    HStack {
+                        Label(String(year), systemImage: "calendar")
+                        Spacer()
+                        Button {
                             toggleYear(year)
+                        } label: {
+                            Image(systemName: expandedYears.contains(year) ? "chevron.down" : "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                    }
                     .tag(SidebarSelection.year(year))
                     .contextMenu {
                         Button(role: .destructive) {
@@ -200,7 +207,6 @@ struct SidebarView: View {
         } else {
             expandedYears.insert(year)
         }
-        appState.sidebarSelection = .year(year)
     }
 
     private func delete(_ board: Board) {
