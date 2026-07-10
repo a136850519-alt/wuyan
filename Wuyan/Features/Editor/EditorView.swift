@@ -98,9 +98,15 @@ struct EditorView: View {
                 }
 
             HStack {
-                Text("\(viewModel.body.count) 字")
+                Text("\(viewModel.body.filter { !$0.isWhitespace }.count) 字")
                 Spacer()
-                Text("已自动保存")
+                if viewModel.isDirty {
+                    Text("正在保存…")
+                } else if let savedAt = viewModel.lastSavedAt {
+                    Text("已保存 \(savedAt, style: .time)")
+                } else {
+                    Text("已保存")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -139,13 +145,14 @@ struct EditorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
-                Text("自动保存")
-                Spacer()
-                if let syncMessage = appState.syncMessage {
-                    Text(syncMessage)
+                if viewModel.isDirty {
+                    Text("正在保存…")
+                } else if let savedAt = viewModel.lastSavedAt {
+                    Text("已保存 \(savedAt, style: .time)")
                 } else {
                     Text("本地已保存")
                 }
+                Spacer()
             }
             .font(.caption)
             .foregroundStyle(.secondary)

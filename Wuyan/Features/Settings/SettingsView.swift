@@ -261,8 +261,6 @@ struct SettingsView: View {
                     Text("系统衬线").tag("serif")
                 }
                 .pickerStyle(.segmented)
-                Toggle("跟随系统暗色模式", isOn: .constant(true))
-                    .disabled(true)
             }
 
             Section("导出与备份") {

@@ -18,6 +18,8 @@ final class EditorViewModel: ObservableObject {
     @Published var placeName = ""
     @Published var latitude = ""
     @Published var longitude = ""
+    @Published var isDirty = false
+    @Published var lastSavedAt: Date?
 
     private var saveTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
@@ -68,6 +70,7 @@ final class EditorViewModel: ObservableObject {
                 return
             }
             isLoading = true
+            isDirty = false
             entry = fetched
             title = fetched.title ?? ""
             body = fetched.body
@@ -108,6 +111,8 @@ final class EditorViewModel: ObservableObject {
         do {
             try appState.entries.save(entry)
             self.entry = try appState.entries.entry(id: entry.id) ?? entry
+            self.isDirty = false
+            self.lastSavedAt = Date()
             appState.refreshRemindersForToday()
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -197,6 +202,7 @@ final class EditorViewModel: ObservableObject {
 
     private func scheduleSave() {
         guard !isLoading else { return }
+        isDirty = true
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
