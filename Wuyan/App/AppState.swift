@@ -539,11 +539,18 @@ final class AppState: ObservableObject {
     }
 
     private static func decryptRemoteDataIfNeeded(_ data: Data) throws -> Data {
-        guard let crypto = makeSyncCryptoFromDefaults(),
-              let payload = try? JSONDecoder.wuyan.decode(EncryptedPayload.self, from: data),
+        guard let crypto = makeSyncCryptoFromDefaults() else { return data }
+        // 加密模式下，数据必须是合法的 EncryptedPayload；不允许静默降级
+        guard let payload = try? JSONDecoder.wuyan.decode(EncryptedPayload.self, from: data),
               let ciphertext = Data(base64Encoded: payload.ciphertextBase64)
-        else { return data }
-        let key = try crypto.key(forSaltBase64: payload.saltBase64, iterations: payload.iterations)
-        return try crypto.box.open(ciphertext, key: key)
+        else {
+            throw SyncError.decryptFailed(reason: "远端媒体数据不是合法的加密格式")
+        }
+        do {
+            let key = try crypto.key(forSaltBase64: payload.saltBase64, iterations: payload.iterations)
+            return try crypto.box.open(ciphertext, key: key)
+        } catch {
+            throw SyncError.decryptFailed(reason: "媒体解密失败：\(error.localizedDescription)")
+        }
     }
 }

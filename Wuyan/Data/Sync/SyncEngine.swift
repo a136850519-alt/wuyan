@@ -1,6 +1,17 @@
 import CryptoKit
 import Foundation
 
+enum SyncError: LocalizedError {
+    case decryptFailed(reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .decryptFailed(reason):
+            return "同步解密失败：\(reason)"
+        }
+    }
+}
+
 actor SyncEngine {
     typealias ProgressHandler = @Sendable (SyncProgress) async -> Void
 
@@ -547,13 +558,18 @@ actor SyncEngine {
 
     private func decodeRaw(_ data: Data) throws -> Data {
         guard let crypto else { return data }
-        if let payload = try? decoder.decode(EncryptedPayload.self, from: data),
-           let ciphertext = Data(base64Encoded: payload.ciphertextBase64) {
-            // 用密文自带的盐/迭代次数派生密钥（缓存），这样别的设备用相同口令也能解开。
+        // 加密模式下，数据必须是合法的 EncryptedPayload；解不出就报错，不允许静默降级为明文。
+        guard let payload = try? decoder.decode(EncryptedPayload.self, from: data),
+              let ciphertext = Data(base64Encoded: payload.ciphertextBase64)
+        else {
+            throw SyncError.decryptFailed(reason: "远端数据不是合法的加密格式，口令可能不正确或文件被篡改")
+        }
+        do {
             let key = try crypto.key(forSaltBase64: payload.saltBase64, iterations: payload.iterations)
             return try crypto.box.open(ciphertext, key: key)
+        } catch {
+            throw SyncError.decryptFailed(reason: "解密失败：口令可能不正确（\(error.localizedDescription)）")
         }
-        return data
     }
 
     private func report(_ progress: SyncProgress) async {
