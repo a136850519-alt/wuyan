@@ -146,17 +146,35 @@ final class EditorViewModel: ObservableObject {
     func saveMetadata(appState: AppState) {
         guard var entry else { return }
         let condition = weatherCondition.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !condition.isEmpty, let temp = Double(weatherTemp.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            entry.weather = Weather(condition: condition, tempC: temp)
+        if !condition.isEmpty {
+            if let temp = Double(weatherTemp.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                entry.weather = Weather(condition: condition, tempC: temp)
+            } else {
+                // 温度解析失败：保留原天气，显示校验错误
+                if entry.weather != nil {
+                    appState.errorMessage = "温度格式不正确，天气信息保留原值。"
+                } else {
+                    // 原来没有天气，只能放弃本次设置
+                    appState.errorMessage = "温度格式不正确，请输入有效数字。"
+                }
+            }
         } else {
             entry.weather = nil
         }
 
         let place = placeName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !place.isEmpty, let lat = Double(latitude), let lon = Double(longitude) {
-            entry.location = GeoPlace(lat: lat, lon: lon, placeName: place)
-        } else if !place.isEmpty {
-            entry.location = GeoPlace(lat: 0, lon: 0, placeName: place)
+        if !place.isEmpty {
+            if let lat = Double(latitude), let lon = Double(longitude),
+               (-90...90).contains(lat), (-180...180).contains(lon) {
+                entry.location = GeoPlace(lat: lat, lon: lon, placeName: place)
+            } else {
+                // 经纬度解析失败或超范围：保留原地点，显示校验错误
+                if entry.location != nil {
+                    appState.errorMessage = "经纬度格式不正确或超范围，地点信息保留原值。"
+                } else {
+                    appState.errorMessage = "经纬度格式不正确，请输入有效数值（纬度 -90~90，经度 -180~180）。"
+                }
+            }
         } else {
             entry.location = nil
         }
