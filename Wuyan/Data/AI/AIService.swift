@@ -13,12 +13,11 @@ final class AIService: PoeticGenerator {
         self.ritualPolishingEnabled = ritualPolishingEnabled
     }
 
-    /// 集中隐私门控：本地 provider 放行；云端 provider 下若任一条目属于敏感板块则拒绝。
-    private func ensureCloudAllowed(for entries: [Entry]) throws {
-        guard let provider, !provider.isLocal else { return }
-        if entries.contains(where: { cloudBlockedBoardIds.contains($0.boardId) }) {
-            throw AIError.blockedBySensitiveBoard
-        }
+    /// 过滤掉敏感板块的条目，只保留可云端发送的条目。
+    /// 替代旧的 ensureCloudAllowed（全拒绝策略），改为只过滤不拒绝。
+    func filterCloudAllowed(_ entries: [Entry]) -> [Entry] {
+        guard let provider, !provider.isLocal else { return entries }
+        return entries.filter { !cloudBlockedBoardIds.contains($0.boardId) }
     }
 
     func line(from rawSummary: String) async -> String {
@@ -39,8 +38,8 @@ final class AIService: PoeticGenerator {
 
     func writingPrompt(context: WritingContext) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
-        try ensureCloudAllowed(for: context.recentEntries)
-        let recent = context.recentEntries.prefix(5).map { $0.body }.joined(separator: "\n")
+        let safeEntries = filterCloudAllowed(context.recentEntries)
+        let recent = safeEntries.prefix(5).map { $0.body }.joined(separator: "\n")
         return try await provider.complete([
             AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
             AIMessage(role: .user, content: "最近内容：\n\(recent)")
@@ -51,9 +50,8 @@ final class AIService: PoeticGenerator {
         guard isEnabled, let provider else {
             return AsyncThrowingStream { $0.finish(throwing: AIError.disabled) }
         }
-        do { try ensureCloudAllowed(for: context.recentEntries) }
-        catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
-        let recent = context.recentEntries.prefix(5).map { $0.body }.joined(separator: "\n")
+        let safeEntries = filterCloudAllowed(context.recentEntries)
+        let recent = safeEntries.prefix(5).map { $0.body }.joined(separator: "\n")
         return provider.stream([
             AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
             AIMessage(role: .user, content: "最近内容：\n\(recent)")
@@ -64,9 +62,8 @@ final class AIService: PoeticGenerator {
         guard isEnabled, let provider else {
             return AsyncThrowingStream { $0.finish(throwing: AIError.disabled) }
         }
-        do { try ensureCloudAllowed(for: entries) }
-        catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
-        let body = entries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
+        let safeEntries = filterCloudAllowed(entries)
+        let body = safeEntries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
         return provider.stream([
             AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
             AIMessage(role: .user, content: body)
@@ -75,8 +72,8 @@ final class AIService: PoeticGenerator {
 
     func summarize(entries: [Entry], period: Period) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
-        try ensureCloudAllowed(for: entries)
-        let body = entries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
+        let safeEntries = filterCloudAllowed(entries)
+        let body = safeEntries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
         return try await provider.complete([
             AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
             AIMessage(role: .user, content: body)
@@ -91,7 +88,8 @@ final class AIService: PoeticGenerator {
 
     func suggestTitle(_ entry: Entry) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
-        try ensureCloudAllowed(for: [entry])
+        let safeEntries = filterCloudAllowed([entry])
+        guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
         return try await provider.complete([
             AIMessage(role: .system, content: "为这篇日记起一个克制的中文短标题，只输出标题。"),
             AIMessage(role: .user, content: entry.body)
@@ -100,7 +98,8 @@ final class AIService: PoeticGenerator {
 
     func suggestTags(_ entry: Entry) async throws -> [String] {
         guard isEnabled, let provider else { throw AIError.disabled }
-        try ensureCloudAllowed(for: [entry])
+        let safeEntries = filterCloudAllowed([entry])
+        guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
         let result = try await provider.complete([
             AIMessage(role: .system, content: "从日记中提取 3 到 6 个中文标签，用逗号分隔，只输出标签。"),
             AIMessage(role: .user, content: entry.body)
@@ -110,13 +109,13 @@ final class AIService: PoeticGenerator {
 
     func ask(_ question: String, entries: [Entry]) async throws -> AnswerWithSources {
         guard isEnabled, let provider else { throw AIError.disabled }
-        try ensureCloudAllowed(for: entries)
+        let safeEntries = filterCloudAllowed(entries)
         let chunks: [RAGChunk]
         if let store = try? RAGIndexStore(provider: provider),
-           let topChunks = try? await store.topChunks(for: question, entries: entries) {
+           let topChunks = try? await store.topChunks(for: question, entries: safeEntries) {
             chunks = topChunks
         } else {
-            chunks = entries.prefix(5).map {
+            chunks = safeEntries.prefix(5).map {
                 RAGChunk(id: $0.id.uuidString, entryId: $0.id, entryHash: $0.contentHash, text: $0.body, embedding: [], updatedAt: Date())
             }
         }

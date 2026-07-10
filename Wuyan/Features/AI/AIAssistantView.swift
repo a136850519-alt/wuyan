@@ -7,7 +7,6 @@ struct AIAssistantView: View {
     @State private var isRunning = false
     @State private var pendingAction: (() -> Void)?
     @State private var showsCloudConfirm = false
-    @State private var trustCloudForSession = false
     @State private var question = ""
     @State private var sourceEntryIds: [UUID] = []
 
@@ -53,7 +52,7 @@ struct AIAssistantView: View {
         .alert("将发送内容到云端 AI", isPresented: $showsCloudConfirm) {
             Button("取消", role: .cancel) { pendingAction = nil }
             Button("信任本会话") {
-                trustCloudForSession = true
+                appState.trustCloudForSession = true
                 pendingAction?()
                 pendingAction = nil
             }
@@ -113,7 +112,7 @@ struct AIAssistantView: View {
             output = "当前板块已标记为禁止云端 AI。"
             return
         }
-        if isCloudAISelected, !trustCloudForSession {
+        if isCloudAISelected, !appState.trustCloudForSession {
             pendingAction = { execute(work) }
             showsCloudConfirm = true
             return
@@ -127,7 +126,7 @@ struct AIAssistantView: View {
             output = "当前板块已标记为禁止云端 AI。"
             return
         }
-        if isCloudAISelected, !trustCloudForSession {
+        if isCloudAISelected, !appState.trustCloudForSession {
             pendingAction = { executeStream(work) }
             showsCloudConfirm = true
             return

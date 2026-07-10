@@ -4,6 +4,8 @@ struct RitualView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = RitualViewModel()
+    @State private var showsCloudConfirm = false
+    @State private var pendingGenerate = false
 
     var body: some View {
         VStack {
@@ -21,6 +23,20 @@ struct RitualView: View {
         .background(Palette.paper)
         .task {
             await viewModel.prepare(appState: appState)
+        }
+        .alert("将发送内容到云端 AI", isPresented: $showsCloudConfirm) {
+            Button("取消", role: .cancel) { pendingGenerate = false }
+            Button("信任本会话") {
+                appState.trustCloudForSession = true
+                pendingGenerate = false
+                Task { await viewModel.generate(appState: appState) }
+            }
+            Button("仅本次") {
+                pendingGenerate = false
+                Task { await viewModel.generate(appState: appState) }
+            }
+        } message: {
+            Text("仪式润色将发送内容到云端 AI 生成诗意批注。")
         }
     }
 
@@ -85,7 +101,12 @@ struct RitualView: View {
                     .buttonStyle(WuyanPrimaryButtonStyle())
                 } else {
                     Button {
-                        Task { await viewModel.generate(appState: appState) }
+                        if isCloudAISelected && !appState.trustCloudForSession {
+                            pendingGenerate = true
+                            showsCloudConfirm = true
+                        } else {
+                            Task { await viewModel.generate(appState: appState) }
+                        }
                     } label: {
                         Label(viewModel.isGenerating ? "生成中" : "落笔成句", systemImage: "sparkles")
                     }
@@ -145,6 +166,11 @@ struct RitualView: View {
                 .buttonStyle(WuyanSecondaryButtonStyle())
             }
         }
+    }
+
+    private var isCloudAISelected: Bool {
+        let provider = UserDefaults.standard.string(forKey: "settings.ai.provider") ?? "zhipu"
+        return provider == "zhipu" || provider == "claude"
     }
 }
 

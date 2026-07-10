@@ -45,6 +45,8 @@ final class AppState: ObservableObject {
     @Published var syncMessage: String?
     @Published var syncProgress: SyncProgress?
     @Published var syncConflicts: [UUID] = []
+    /// 全局云端 AI 信任标记：同一会话内确认一次后，AIAssistantView 和 RitualView 共享。
+    @Published var trustCloudForSession = false
     /// 已归档年份（本地内容已删除、仅存于 NAS）。按降序排列。
     @Published var archivedYears: [Int] = []
 
