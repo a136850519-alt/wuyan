@@ -122,21 +122,46 @@ final class ExportService {
     }
 
     func exportPDF(entries: [Entry], to url: URL) throws {
-        let text = entries.map { entry in
+        // 合并所有条目为一个带分隔的富文本
+        let fullText = entries.map { entry in
             "\(entry.title ?? "未命名")\n\(entry.journalDate)\n\n\(entry.body)"
         }.joined(separator: "\n\n---\n\n")
-        let attributed = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 13)])
+
+        // 使用霞鹜文楷字体（产品气质一致），回退到系统衬线体
+        let font = NSFont(name: WuyanFont.bundledSerifName, size: 13) ?? NSFont.systemFont(ofSize: 13)
+        let attributed = NSAttributedString(string: fullText, attributes: [.font: font])
+
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
               let context = CGContext(consumer: consumer, mediaBox: nil, nil)
         else { return }
-        var mediaBox = CGRect(x: 0, y: 0, width: 595, height: 842)
-        context.beginPDFPage([kCGPDFContextMediaBox as String: NSData(bytes: &mediaBox, length: MemoryLayout<CGRect>.size)] as CFDictionary)
+
+        let pageWidth: CGFloat = 595
+        let pageHeight: CGFloat = 842
+        let marginX: CGFloat = 48
+        let marginY: CGFloat = 48
+        let contentWidth = pageWidth - 2 * marginX
+        let contentHeight = pageHeight - 2 * marginY
+
+        var mediaBox = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let path = CGPath(rect: CGRect(x: 48, y: 48, width: 499, height: 746), transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: attributed.length), path, nil)
-        CTFrameDraw(frame, context)
-        context.endPDFPage()
+        var currentIndex = 0
+        let totalLength = attributed.length
+
+        while currentIndex < totalLength {
+            context.beginPDFPage([kCGPDFContextMediaBox as String: NSData(bytes: &mediaBox, length: MemoryLayout<CGRect>.size)] as CFDictionary)
+
+            let path = CGPath(rect: CGRect(x: marginX, y: marginY, width: contentWidth, height: contentHeight), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: currentIndex, length: totalLength - currentIndex), path, nil)
+            let visibleRange = CTFrameGetVisibleStringRange(frame)
+
+            CTFrameDraw(frame, context)
+            context.endPDFPage()
+
+            if visibleRange.length <= 0 { break }
+            currentIndex += visibleRange.length
+        }
+
         context.closePDF()
         try data.write(to: url, options: .atomic)
     }
