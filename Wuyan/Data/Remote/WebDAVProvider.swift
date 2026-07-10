@@ -43,10 +43,10 @@ struct WebDAVProvider: RemoteStorageProvider {
             request,
             method: "PROPFIND",
             path: path,
-            allowed: [200, 207, 404, 500]
+            allowed: [200, 207, 404]
         )
         guard let http = response as? HTTPURLResponse else { return [] }
-        if http.statusCode == 404 || http.statusCode == 500 { return [] }
+        if http.statusCode == 404 { return [] }
         return WebDAVMultistatusParser.parse(data: data)
     }
 
@@ -202,7 +202,8 @@ struct WebDAVProvider: RemoteStorageProvider {
         request.setValue("0", forHTTPHeaderField: "Depth")
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { return false }
-        if http.statusCode == 404 || http.statusCode == 500 { return false }
+        // 只有 404 表示「不存在」；5xx 是服务端错误，必须抛错以防误判为"首次同步"而覆盖远端。
+        if http.statusCode == 404 { return false }
         try validate(response, method: "PROPFIND", path: path, allowed: [200, 207])
         return true
     }
