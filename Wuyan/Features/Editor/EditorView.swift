@@ -381,7 +381,7 @@ struct EditorView: View {
     private func preview(_ asset: MediaAsset) {
         Task {
             do {
-                if let url = try await appState.downloadMediaIfNeeded(asset) {
+                if let url = try await appState.syncCoordinator.downloadMediaIfNeeded(asset) {
                     await MainActor.run {
                         QuickLookPreviewer.shared.preview(url: url)
                     }

@@ -343,7 +343,7 @@ struct SettingsView: View {
 
         let provider: any RemoteStorageProvider
         do {
-            provider = try AppState.makeRemoteStorageProviderFromDefaults()
+            provider = try ProviderFactory.makeRemoteStorageProvider()
         } catch {
             connectionMessage = error.localizedDescription
             isTestingStorage = false
