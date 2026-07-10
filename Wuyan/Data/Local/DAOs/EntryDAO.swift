@@ -99,6 +99,73 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// 轻量观察：只返回 EntrySummary（不含 body/bodyRTF），用于时间线
+    func observeTimelineSummaries(filter: TimelineFilter) -> AsyncStream<[EntrySummary]> {
+        let observation = ValueObservation.tracking { db in
+            var sql = """
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength,
+                       isFavorite, boardId, tags
+                FROM entry
+                WHERE deleted = 0
+                """
+            var arguments = StatementArguments()
+
+            switch filter {
+            case .all:
+                break
+            case .favorites:
+                sql += " AND isFavorite = 1"
+            case .drafts:
+                sql += " AND isDraft = 1"
+            case .todayInHistory:
+                let today = DayKey.today
+                sql += " AND substr(dayDate, 6, 5) = ? AND substr(dayDate, 1, 4) != ?"
+                arguments += [String(today.dropFirst(5)), String(today.prefix(4))]
+            case let .board(id):
+                sql += " AND boardId = ?"
+                arguments += [id.uuidString]
+            case let .year(year):
+                sql += " AND substr(dayDate, 1, 4) = ?"
+                arguments += [String(year)]
+            case let .yearBoard(year, id):
+                sql += " AND boardId = ? AND substr(dayDate, 1, 4) = ?"
+                arguments += [id.uuidString, String(year)]
+            case let .day(day):
+                sql += " AND dayDate = ?"
+                arguments += [day]
+            }
+
+            sql += " ORDER BY journalDate DESC, id DESC"
+            return try EntrySummary.fetchAll(db, sql: sql, arguments: arguments)
+        }
+
+        return AsyncStream { continuation in
+            let cancellable = observation.start(
+                in: writer,
+                scheduling: .immediate,
+                onError: { _ in continuation.finish() },
+                onChange: { summaries in continuation.yield(summaries) }
+            )
+            continuation.onTermination = { _ in
+                cancellable.cancel()
+            }
+        }
+    }
+
+    /// 取最近 N 条摘要（不读 bodyRTF），供 AI 等不需要完整内容的场景
+    func recentSummaries(limit: Int = 30) throws -> [EntrySummary] {
+        try writer.read { db in
+            let sql = """
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength
+                FROM entry
+                WHERE deleted = 0
+                ORDER BY journalDate DESC
+                LIMIT ?
+                """
+            return try EntrySummary.fetchAll(db, sql: sql, arguments: [limit])
+        }
+    }
+
     public func entry(id: UUID) throws -> Entry? {
         try writer.read { db in
             try Entry.fetchOne(db, key: id.uuidString)
@@ -323,6 +390,9 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
     var title: String?
     var bodyPreview: String
     var bodyLength: Int
+    var isFavorite: Bool
+    var boardId: UUID
+    var tags: [String]
 
     init(row: Row) throws {
         id = UUID(uuidString: row["id"]) ?? UUID()
@@ -331,6 +401,26 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
         title = row["title"]
         bodyPreview = row["bodyPreview"]
         bodyLength = row["bodyLength"]
+        // isFavorite/boardId/tags 可能不在某些查询中（如旧版 timelineSummaries）
+        if row.hasColumn("isFavorite") {
+            let fav: Int = row["isFavorite"]
+            isFavorite = fav == 1
+        } else {
+            isFavorite = false
+        }
+        if row.hasColumn("boardId") {
+            let str: String = row["boardId"]
+            boardId = UUID(uuidString: str) ?? UUID()
+        } else {
+            boardId = UUID()
+        }
+        if row.hasColumn("tags") {
+            let tagsStr: String = row["tags"]
+            let data = tagsStr.data(using: .utf8) ?? Data()
+            tags = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        } else {
+            tags = []
+        }
     }
 }
 

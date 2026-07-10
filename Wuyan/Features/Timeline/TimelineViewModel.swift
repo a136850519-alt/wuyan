@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class TimelineViewModel: ObservableObject {
-    @Published var entries: [Entry] = []
+    @Published var summaries: [EntrySummary] = []
 
     private var observationTask: Task<Void, Never>?
 
@@ -33,20 +33,20 @@ final class TimelineViewModel: ObservableObject {
         }
 
         observationTask = Task {
-            for await entries in appState.entries.observeTimeline(filter: filter) {
-                self.entries = entries
+            for await newSummaries in appState.entries.observeTimelineSummaries(filter: filter) {
+                self.summaries = newSummaries
                 if let selected = appState.selectedEntryId,
-                   !entries.contains(where: { $0.id == selected }) {
-                    appState.selectedEntryId = entries.first?.id
+                   !newSummaries.contains(where: { $0.id == selected }) {
+                    appState.selectedEntryId = newSummaries.first?.id
                 } else if appState.selectedEntryId == nil {
-                    appState.selectedEntryId = entries.first?.id
+                    appState.selectedEntryId = newSummaries.first?.id
                 }
             }
         }
     }
 
     var days: [TimelineDay] {
-        Dictionary(grouping: entries, by: \.dayDate)
+        Dictionary(grouping: summaries, by: \.dayDate)
             .map { day, entries in
                 TimelineDay(day: day, entries: entries)
             }
@@ -57,17 +57,17 @@ final class TimelineViewModel: ObservableObject {
 struct TimelineDay: Identifiable, Equatable {
     var id: String { day }
     let day: String
-    let entries: [Entry]
+    let entries: [EntrySummary]
 
     var sortDate: Date {
         DayKey.date(from: day) ?? entries.map(\.journalDate).max() ?? .distantPast
     }
 
     var totalWords: Int {
-        entries.reduce(0) { $0 + $1.body.count }
+        entries.reduce(0) { $0 + $1.bodyLength }
     }
 
-    var latestEntry: Entry? {
+    var latestEntry: EntrySummary? {
         entries.sorted { $0.journalDate > $1.journalDate }.first
     }
 

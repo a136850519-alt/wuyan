@@ -7,9 +7,9 @@ struct TimelineView: View {
 
     private var days: [TimelineDay] {
         let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? viewModel.entries
-            : viewModel.entries.filter { entry in
-                [entry.title ?? "", entry.body, entry.tags.joined(separator: " ")]
+            ? viewModel.summaries
+            : viewModel.summaries.filter { summary in
+                [summary.title ?? "", summary.bodyPreview, summary.tags.joined(separator: " ")]
                     .joined(separator: " ")
                     .localizedCaseInsensitiveContains(searchText)
             }
@@ -88,10 +88,6 @@ private struct TimelineDayRow: View {
                     if day.entries.contains(where: \.isFavorite) {
                         Label("有收藏", systemImage: "heart.fill")
                     }
-                    let mediaCount = day.entries.reduce(0) { $0 + $1.mediaIds.count }
-                    if mediaCount > 0 {
-                        Label("\(mediaCount)", systemImage: "paperclip")
-                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -110,8 +106,8 @@ private struct TimelineDayRow: View {
         if let title = entry.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return title
         }
-        if !entry.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return entry.body
+        if !entry.bodyPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return entry.bodyPreview
         }
         return "这一天还没有正文"
     }

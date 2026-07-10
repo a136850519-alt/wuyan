@@ -65,7 +65,8 @@ struct AIAssistantView: View {
     private func runPrompt() {
         runStream {
             let entries = (try? appState.entries.timeline(filter: .all)) ?? []
-            return appState.aiService.streamWritingPrompt(context: WritingContext(date: Date(), weather: entry?.weather, recentEntries: entries))
+            let limited = Array(entries.prefix(30))
+            return appState.aiService.streamWritingPrompt(context: WritingContext(date: Date(), weather: entry?.weather, recentEntries: limited))
         }
     }
 
@@ -101,9 +102,7 @@ struct AIAssistantView: View {
 
     private func nonSensitiveEntries() -> [Entry] {
         let entries = (try? appState.entries.timeline(filter: .all)) ?? []
-        let boards = (try? appState.boards.all()) ?? []
-        let blocked = Set(boards.filter(\.disallowCloudAI).map(\.id))
-        return entries.filter { !blocked.contains($0.boardId) }
+        return appState.aiService.filterCloudAllowed(Array(entries.prefix(30)))
     }
 
     private func run(_ work: @escaping () async throws -> String) {
