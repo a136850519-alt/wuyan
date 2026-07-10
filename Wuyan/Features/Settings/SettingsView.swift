@@ -24,7 +24,6 @@ struct SettingsView: View {
     @AppStorage("settings.reminder.skipWrittenDays") private var skipWrittenDays = true
     @AppStorage("settings.metadata.enabled") private var metadataEnabled = true
     @AppStorage("settings.crypto.enabled") private var cryptoEnabled = false
-    @AppStorage("settings.crypto.cachePassphrase") private var cacheCryptoPassphrase = true
     @State private var webDAVPassword = ""
     @State private var s3SecretKey = ""
     @State private var zhipuAPIKey = ""
@@ -272,8 +271,6 @@ struct SettingsView: View {
                     .tint(Palette.cinnabar)
                 SecureField("同步加密口令", text: $cryptoPassphrase)
                 SecureField("再次输入口令", text: $cryptoConfirm)
-                Toggle("用钥匙串缓存口令", isOn: $cacheCryptoPassphrase)
-                    .tint(Palette.cinnabar)
                 Button("保存加密设置") {
                     saveCryptoSettings()
                 }

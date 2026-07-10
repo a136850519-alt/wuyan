@@ -7,6 +7,8 @@ struct WuyanApp: App {
     init() {
         do {
             WuyanFont.registerBundledFonts()
+            // 将旧版 UserDefaults 中的凭据迁移到 Keychain
+            SecureSettings.migrateAllFromDefaults()
             let database = try AppDatabase.makeDefault()
             let state = AppState(database: database)
             _appState = StateObject(wrappedValue: state)

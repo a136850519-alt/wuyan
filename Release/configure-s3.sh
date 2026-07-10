@@ -106,7 +106,9 @@ defaults write "$APP_BUNDLE_ID" "settings.s3.bucket" -string "$S3_BUCKET"
 defaults write "$APP_BUNDLE_ID" "settings.s3.accessKey" -string "$S3_ACCESS_KEY"
 defaults write "$APP_BUNDLE_ID" "settings.s3.pathStyle" -bool "$S3_PATH_STYLE"
 
-defaults write "$APP_BUNDLE_ID" "settings.s3.secretKey" -string "$S3_SECRET_KEY"
+# 将 Secret Key 写入 Keychain（不再写 defaults，避免明文泄露）
+security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -U 2>/dev/null \
+  || security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY"
 
 echo "已写入晤言 S3 / MinIO 配置："
 echo "  Bundle ID: $APP_BUNDLE_ID"
@@ -116,4 +118,4 @@ echo "  Region: $S3_REGION"
 echo "  Access Key: $S3_ACCESS_KEY"
 echo "  Path-style URL: $S3_PATH_STYLE"
 echo
-echo "Secret Key 已写入本机 defaults。"
+echo "Secret Key 已写入系统钥匙串。"

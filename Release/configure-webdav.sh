@@ -90,7 +90,9 @@ defaults write "$APP_BUNDLE_ID" "settings.storage.backend" -string "webDAV"
 defaults write "$APP_BUNDLE_ID" "settings.webdav.baseURL" -string "$WEB_DAV_URL"
 defaults write "$APP_BUNDLE_ID" "settings.webdav.username" -string "$WEB_DAV_USERNAME"
 
-defaults write "$APP_BUNDLE_ID" "settings.webdav.password" -string "$WEB_DAV_PASSWORD"
+# 将密码写入 Keychain（不再写 defaults，避免明文泄露）
+security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -U 2>/dev/null \
+  || security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD"
 
 if [[ "$MARK_ONBOARDING_DONE" == "true" ]]; then
   defaults write "$APP_BUNDLE_ID" "onboarding.completed" -bool true
@@ -104,4 +106,4 @@ if [[ "$MARK_ONBOARDING_DONE" == "true" ]]; then
   echo "  onboarding: 已标记完成"
 fi
 echo
-echo "密码已写入本机 defaults。"
+echo "密码已写入系统钥匙串。"

@@ -2,11 +2,13 @@ import Foundation
 import Security
 
 struct Keychain {
-    func string(for key: String) -> String? {
+    static let service = "com.wuyan.app"
+
+    func string(for account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecAttrService as String: key,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: Self.service,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -16,11 +18,11 @@ struct Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    func setString(_ value: String?, for key: String) {
+    func setString(_ value: String?, for account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecAttrService as String: key
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: Self.service
         ]
         if let value {
             let data = Data(value.utf8)
