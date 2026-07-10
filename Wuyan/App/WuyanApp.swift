@@ -1,5 +1,10 @@
 import SwiftUI
 
+extension Notification.Name {
+    /// 应用即将退出，各组件应立即 flush 未保存数据
+    static let wuyanWillTerminate = Notification.Name("wuyanWillTerminate")
+}
+
 @main
 struct WuyanApp: App {
     @StateObject private var appState: AppState
@@ -23,6 +28,9 @@ struct WuyanApp: App {
                 .environmentObject(appState)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(WindowMaximizer())
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    NotificationCenter.default.post(name: .wuyanWillTerminate, object: nil)
+                }
         }
         .commands {
             AppCommands(appState: appState)

@@ -77,6 +77,9 @@ struct EditorView: View {
         .onChange(of: appState.selectedEntryId) {
             viewModel.load(id: appState.selectedEntryId, appState: appState)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .wuyanWillTerminate)) { _ in
+            viewModel.flushIfNeeded(appState: appState)
+        }
     }
 
     private var writingPane: some View {

@@ -53,7 +53,10 @@ final class EditorViewModel: ObservableObject {
 
     func load(id: UUID?, appState: AppState) {
         configure(appState: appState)
+        // 切换条目前先 flush 当前未落盘的变更，防丢失最后 0.5 秒输入
+        flushIfNeeded(appState: appState)
         saveTask?.cancel()
+        saveTask = nil
         guard let id else {
             entry = nil
             return
@@ -164,6 +167,14 @@ final class EditorViewModel: ObservableObject {
         } catch {
             appState.errorMessage = error.localizedDescription
         }
+    }
+
+    /// 将当前条目的未落盘变更立即同步写出（切换条目/退出时调用）
+    func flushIfNeeded(appState: AppState) {
+        guard saveTask != nil, entry != nil else { return }
+        saveTask?.cancel()
+        saveTask = nil
+        saveNow(appState: appState)
     }
 
     private func scheduleSave() {
