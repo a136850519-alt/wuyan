@@ -14,18 +14,55 @@ struct Manifest: Codable, Equatable {
 
 struct CryptoManifestHeader: Codable, Equatable {
     var algorithm: String = "AES-GCM"
-    var kdf: String = "SHA256-ITERATED"
+    var kdf: String = "PBKDF2-HMAC-SHA256"
     var saltBase64: String
     var iterations: Int
+
+    init(algorithm: String = "AES-GCM", kdf: String = "PBKDF2-HMAC-SHA256", saltBase64: String, iterations: Int) {
+        self.algorithm = algorithm
+        self.kdf = kdf
+        self.saltBase64 = saltBase64
+        self.iterations = iterations
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        algorithm = try container.decode(String.self, forKey: .algorithm)
+        // 兼容旧版 "SHA256-ITERATED" 写法
+        let rawKdf = try container.decode(String.self, forKey: .kdf)
+        kdf = (rawKdf == "SHA256-ITERATED") ? "PBKDF2-HMAC-SHA256" : rawKdf
+        saltBase64 = try container.decode(String.self, forKey: .saltBase64)
+        iterations = try container.decode(Int.self, forKey: .iterations)
+    }
 }
 
 struct EncryptedPayload: Codable, Equatable {
     var schemaVersion: Int = 1
     var algorithm: String = "AES-GCM"
-    var kdf: String = "SHA256-ITERATED"
+    var kdf: String = "PBKDF2-HMAC-SHA256"
     var saltBase64: String
     var iterations: Int
     var ciphertextBase64: String
+
+    init(schemaVersion: Int = 1, algorithm: String = "AES-GCM", kdf: String = "PBKDF2-HMAC-SHA256", saltBase64: String, iterations: Int, ciphertextBase64: String) {
+        self.schemaVersion = schemaVersion
+        self.algorithm = algorithm
+        self.kdf = kdf
+        self.saltBase64 = saltBase64
+        self.iterations = iterations
+        self.ciphertextBase64 = ciphertextBase64
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        algorithm = try container.decode(String.self, forKey: .algorithm)
+        let rawKdf = try container.decode(String.self, forKey: .kdf)
+        kdf = (rawKdf == "SHA256-ITERATED") ? "PBKDF2-HMAC-SHA256" : rawKdf
+        saltBase64 = try container.decode(String.self, forKey: .saltBase64)
+        iterations = try container.decode(Int.self, forKey: .iterations)
+        ciphertextBase64 = try container.decode(String.self, forKey: .ciphertextBase64)
+    }
 }
 
 struct ManifestDayNote: Codable, Equatable {

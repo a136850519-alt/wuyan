@@ -145,25 +145,30 @@ final class AppState: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let crypto = Self.makeSyncCryptoFromDefaults()
-        if UserDefaults.standard.bool(forKey: "settings.crypto.enabled"), crypto == nil {
-            syncMessage = nil
-            syncProgress = nil
-            errorMessage = "请先在设置中填写同步加密口令。"
-            return
-        }
-        let archived = Set(archivedYears)
-        let engine = SyncEngine(provider: provider, database: db, crypto: crypto, archivedYears: archived) { progress in
-            await MainActor.run {
-                self.syncProgress = progress
-                if let detail = progress.detail, !detail.isEmpty {
-                    self.syncMessage = "\(progress.phase)：\(detail)"
-                } else {
-                    self.syncMessage = progress.phase
-                }
+        if UserDefaults.standard.bool(forKey: "settings.crypto.enabled") {
+            let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
+            if passphrase.isEmpty {
+                syncMessage = nil
+                syncProgress = nil
+                errorMessage = "请先在设置中填写同步加密口令。"
+                return
             }
         }
+        let archived = Set(archivedYears)
+        let dbRef = db
         Task {
+            // SyncCrypto 的 PBKDF2 密钥派生在此后台 Task 中完成，不阻塞主线程
+            let crypto = Self.makeSyncCryptoFromDefaults()
+            let engine = SyncEngine(provider: provider, database: dbRef, crypto: crypto, archivedYears: archived) { progress in
+                await MainActor.run {
+                    self.syncProgress = progress
+                    if let detail = progress.detail, !detail.isEmpty {
+                        self.syncMessage = "\(progress.phase)：\(detail)"
+                    } else {
+                        self.syncMessage = progress.phase
+                    }
+                }
+            }
             do {
                 let report = try await engine.syncNow()
                 await MainActor.run {
@@ -197,16 +202,10 @@ final class AppState: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let crypto = Self.makeSyncCryptoFromDefaults()
-        if UserDefaults.standard.bool(forKey: "settings.crypto.enabled"), crypto == nil {
-            syncMessage = nil
-            syncProgress = nil
-            errorMessage = "请先在设置中填写同步加密口令。"
-            return
-        }
         let database = db
         let mediaStore = mediaStore
         Task {
+            let crypto = Self.makeSyncCryptoFromDefaults()
             do {
                 let yearEntries = try entries.timeline(filter: .year(year))
                 let engine = SyncEngine(provider: provider, database: database, crypto: crypto) { progress in
@@ -284,15 +283,9 @@ final class AppState: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let crypto = Self.makeSyncCryptoFromDefaults()
-        if UserDefaults.standard.bool(forKey: "settings.crypto.enabled"), crypto == nil {
-            syncMessage = nil
-            syncProgress = nil
-            errorMessage = "请先在设置中填写同步加密口令。"
-            return
-        }
         let database = db
         Task {
+            let crypto = Self.makeSyncCryptoFromDefaults()
             do {
                 let engine = SyncEngine(provider: provider, database: database, crypto: crypto) { progress in
                     await MainActor.run {

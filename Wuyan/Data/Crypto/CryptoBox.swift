@@ -1,9 +1,11 @@
+import CommonCrypto
 import CryptoKit
 import Foundation
 
 struct KDFParams: Codable, Equatable {
     var salt: Data
     var iterations: Int = 210_000
+    var kdfAlgorithm: String = "PBKDF2-HMAC-SHA256"
 }
 
 protocol CryptoBox {
@@ -13,26 +15,29 @@ protocol CryptoBox {
 }
 
 struct AESGCMCryptoBox: CryptoBox {
-    // PBKDF2-HMAC-SHA256（纯 CryptoKit 实现，dkLen = 32 = 1 个 SHA256 块）。
-    // 取代原来仅迭代约 21 次 SHA256 的弱派生——后者可被瞬间暴力破解。
+    /// 使用 CommonCrypto 的 CCKeyDerivationPBKDF 进行密钥派生，
+    /// 比纯 Swift 循环快数倍，且避免阻塞主线程。
     func deriveKey(passphrase: String, salt: Data, params: KDFParams) throws -> SymmetricKey {
         let iterations = max(1, params.iterations)
-        let macKey = SymmetricKey(data: Data(passphrase.utf8))
+        var derivedKey = Data(count: 32)  // dkLen = 32 bytes = 1 个 SHA256 块
 
-        // U1 = PRF(P, S || INT_32_BE(1))
-        var block = salt
-        block.append(contentsOf: [0, 0, 0, 1])
-        var u = Data(HMAC<SHA256>.authenticationCode(for: block, using: macKey))
-        var result = u
-
-        // U_i = PRF(P, U_{i-1}); T = U1 ^ U2 ^ … ^ Uc
-        for _ in 1..<iterations {
-            u = Data(HMAC<SHA256>.authenticationCode(for: u, using: macKey))
-            for i in result.indices {
-                result[i] ^= u[i]
+        derivedKey.withUnsafeMutableBytes { derivedPtr in
+            salt.withUnsafeBytes { saltPtr in
+                _ = CCKeyDerivationPBKDF(
+                    CCPBKDFAlgorithm(kCCPBKDF2),
+                    passphrase,
+                    passphrase.utf8.count,
+                    saltPtr.baseAddress,
+                    salt.count,
+                    CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                    UInt32(iterations),
+                    derivedPtr.baseAddress,
+                    32
+                )
             }
         }
-        return SymmetricKey(data: result)
+
+        return SymmetricKey(data: derivedKey)
     }
 
     func seal(_ plaintext: Data, key: SymmetricKey) throws -> Data {
