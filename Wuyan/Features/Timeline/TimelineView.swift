@@ -5,15 +5,13 @@ struct TimelineView: View {
     @StateObject private var viewModel = TimelineViewModel()
     @State private var searchText = ""
 
+    private var displayedSummaries: [EntrySummary] {
+        viewModel.isSearching ? viewModel.searchResults : viewModel.summaries
+    }
+
     private var days: [TimelineDay] {
-        let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? viewModel.summaries
-            : viewModel.summaries.filter { summary in
-                [summary.title ?? "", summary.bodyPreview, summary.tags.joined(separator: " ")]
-                    .joined(separator: " ")
-                    .localizedCaseInsensitiveContains(searchText)
-            }
-        return Dictionary(grouping: filtered, by: \.dayDate)
+        let items = displayedSummaries
+        return Dictionary(grouping: items, by: \.dayDate)
             .map { TimelineDay(day: $0.key, entries: $0.value) }
             .sorted { $0.sortDate > $1.sortDate }
     }
@@ -25,6 +23,22 @@ struct TimelineView: View {
                     .foregroundStyle(.secondary)
                 TextField("搜索", text: $searchText)
                     .textFieldStyle(.plain)
+                    .onSubmit { performSearch() }
+                    .onChange(of: searchText) {
+                        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            viewModel.clearSearch()
+                        }
+                    }
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                        viewModel.clearSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(10)
             .background(.thinMaterial)
@@ -54,6 +68,10 @@ struct TimelineView: View {
         .onChange(of: appState.sidebarSelection) {
             viewModel.observe(appState: appState)
         }
+    }
+
+    private func performSearch() {
+        viewModel.search(query: searchText, appState: appState)
     }
 }
 

@@ -84,6 +84,42 @@ public final class AppDatabase {
                 }
             }
         }
+        migrator.registerMigration("v5-fts-trigram") { db in
+            // 重建 FTS5 索引，改用 trigram 分词器以支持中文子串搜索
+            try db.execute(sql: "DROP TABLE IF EXISTS entry_fts")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS entry_ai")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS entry_ad")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS entry_au")
+
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE entry_fts USING fts5(
+                  title, body, tags, content='entry', content_rowid='rowid',
+                  tokenize='trigram'
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER entry_ai AFTER INSERT ON entry BEGIN
+                  INSERT INTO entry_fts(rowid, title, body, tags)
+                  VALUES (new.rowid, new.title, new.body, new.tags);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER entry_ad AFTER DELETE ON entry BEGIN
+                  INSERT INTO entry_fts(entry_fts, rowid, title, body, tags)
+                  VALUES('delete', old.rowid, old.title, old.body, old.tags);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER entry_au AFTER UPDATE ON entry BEGIN
+                  INSERT INTO entry_fts(entry_fts, rowid, title, body, tags)
+                  VALUES('delete', old.rowid, old.title, old.body, old.tags);
+                  INSERT INTO entry_fts(rowid, title, body, tags)
+                  VALUES (new.rowid, new.title, new.body, new.tags);
+                END
+                """)
+            // 重建全文索引
+            try db.execute(sql: "INSERT INTO entry_fts(entry_fts) VALUES('rebuild')")
+        }
         return migrator
     }
 }

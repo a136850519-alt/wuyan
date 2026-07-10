@@ -3,6 +3,8 @@ import Foundation
 @MainActor
 final class TimelineViewModel: ObservableObject {
     @Published var summaries: [EntrySummary] = []
+    @Published var searchResults: [EntrySummary] = []
+    @Published var isSearching = false
 
     private var observationTask: Task<Void, Never>?
 
@@ -45,12 +47,50 @@ final class TimelineViewModel: ObservableObject {
         }
     }
 
+    /// 使用 FTS5 trigram 执行全文搜索
+    func search(query: String, appState: AppState) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        let results = (try? appState.entries.search(EntrySearchQuery(term: trimmed))) ?? []
+        searchResults = results.map { result in
+            EntrySummary(
+                id: result.entry.id,
+                dayDate: result.entry.dayDate,
+                journalDate: result.entry.journalDate,
+                title: result.entry.title,
+                bodyPreview: result.bodySnippet.strippingHTMLMarks,
+                bodyLength: result.entry.body.count,
+                isFavorite: result.entry.isFavorite,
+                boardId: result.entry.boardId,
+                tags: result.entry.tags
+            )
+        }
+    }
+
+    func clearSearch() {
+        searchResults = []
+        isSearching = false
+    }
+
     var days: [TimelineDay] {
         Dictionary(grouping: summaries, by: \.dayDate)
             .map { day, entries in
                 TimelineDay(day: day, entries: entries)
             }
             .sorted { $0.sortDate > $1.sortDate }
+    }
+}
+
+// 辅助：去除 FTS snippet 中的 <mark> 标签，保留文字
+private extension String {
+    var strippingHTMLMarks: String {
+        replacingOccurrences(of: "<mark>", with: "")
+            .replacingOccurrences(of: "</mark>", with: "")
     }
 }
 

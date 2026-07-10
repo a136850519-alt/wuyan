@@ -394,6 +394,18 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
     var boardId: UUID
     var tags: [String]
 
+    init(id: UUID, dayDate: String, journalDate: Date, title: String?, bodyPreview: String, bodyLength: Int, isFavorite: Bool = false, boardId: UUID = UUID(), tags: [String] = []) {
+        self.id = id
+        self.dayDate = dayDate
+        self.journalDate = journalDate
+        self.title = title
+        self.bodyPreview = bodyPreview
+        self.bodyLength = bodyLength
+        self.isFavorite = isFavorite
+        self.boardId = boardId
+        self.tags = tags
+    }
+
     init(row: Row) throws {
         id = UUID(uuidString: row["id"]) ?? UUID()
         dayDate = row["dayDate"]
