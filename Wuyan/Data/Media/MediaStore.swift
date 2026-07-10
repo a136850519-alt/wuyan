@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -238,23 +239,49 @@ final class LocalMediaStore: MediaStoreProtocol {
     }
 
     private func makeThumbnailIfPossible(for url: URL, sha: String) throws -> String? {
-        guard mediaType(for: url) == .photo,
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 480
-              ] as CFDictionary)
-        else { return nil }
+        let type = mediaType(for: url)
 
-        let thumbURL = mediaURL.appendingPathComponent("thumbnails", isDirectory: true)
-        try fileManager.createDirectory(at: thumbURL, withIntermediateDirectories: true)
-        let outputURL = thumbURL.appendingPathComponent("\(sha).jpg")
-        guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            return nil
+        if type == .photo {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 480
+                  ] as CFDictionary)
+            else { return nil }
+
+            let thumbURL = mediaURL.appendingPathComponent("thumbnails", isDirectory: true)
+            try fileManager.createDirectory(at: thumbURL, withIntermediateDirectories: true)
+            let outputURL = thumbURL.appendingPathComponent("\(sha).jpg")
+            guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+                return nil
+            }
+            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationFinalize(destination)
+            return Self.toRelativePath(outputURL.path)
         }
-        CGImageDestinationAddImage(destination, image, nil)
-        CGImageDestinationFinalize(destination)
-        return Self.toRelativePath(outputURL.path)
+
+        if type == .video {
+            let asset = AVAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            do {
+                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let thumbURL = mediaURL.appendingPathComponent("thumbnails", isDirectory: true)
+                try fileManager.createDirectory(at: thumbURL, withIntermediateDirectories: true)
+                let outputURL = thumbURL.appendingPathComponent("\(sha).jpg")
+                guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+                    return nil
+                }
+                CGImageDestinationAddImage(destination, cgImage, nil)
+                CGImageDestinationFinalize(destination)
+                return Self.toRelativePath(outputURL.path)
+            } catch {
+                return nil
+            }
+        }
+
+        return nil
     }
 
     private func mediaType(for url: URL) -> MediaType {
