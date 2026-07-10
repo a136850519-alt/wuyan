@@ -428,7 +428,7 @@ actor SyncEngine {
             )
             let data = try encode(envelope)
             try await provider.put(path, data: data, contentType: "application/json")
-            try database.entryDAO.markClean(id: entry.id)
+            try database.entryDAO.markClean(id: entry.id, expectedHash: entry.contentHash)
             let item = ManifestEntry(id: entry.id, boardId: entry.boardId, dayDate: entry.dayDate, path: path, updatedAt: entry.updatedAt, hash: entry.contentHash, deleted: entry.deleted)
             if let index = manifest.entries.firstIndex(where: { $0.id == entry.id }) {
                 manifest.entries[index] = item

@@ -146,19 +146,23 @@ struct RichTextEditor: NSViewRepresentable {
             textView.undoManager?.removeAllActions()
             defer { isApplyingExternalValue = false }
 
-            if let rtfData,
-               let attributed = try? NSAttributedString(
-                data: rtfData,
-                options: [.documentType: NSAttributedString.DocumentType.rtfd],
-                documentAttributes: nil
-               ) ?? try? NSAttributedString(
-                data: rtfData,
-                options: [.documentType: NSAttributedString.DocumentType.rtf],
-                documentAttributes: nil
-               ) {
-                textView.textStorage?.setAttributedString(attributed)
-                lastRTFData = rtfData
-                return
+            if let rtfData {
+                // 优先尝试 RTFD（保留内嵌图片），失败回退 RTF（旧格式兼容）
+                let rtfd = try? NSAttributedString(
+                    data: rtfData,
+                    options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                    documentAttributes: nil
+                )
+                let rtf = try? NSAttributedString(
+                    data: rtfData,
+                    options: [.documentType: NSAttributedString.DocumentType.rtf],
+                    documentAttributes: nil
+                )
+                if let attributed = rtfd ?? rtf {
+                    textView.textStorage?.setAttributedString(attributed)
+                    lastRTFData = rtfData
+                    return
+                }
             }
 
             let font = NSFont(name: WuyanFont.bundledSerifName, size: 18) ?? NSFont.systemFont(ofSize: 18)
@@ -176,13 +180,15 @@ struct RichTextEditor: NSViewRepresentable {
         private static func rtfData(from textView: NSTextView) -> Data? {
             let attributed = textView.attributedString()
             // 优先使用 RTFD 格式（保留内嵌图片附件），回退到 RTF（纯文本旧格式兼容）
-            return try? attributed.data(
+            let rtfd = try? attributed.data(
                 from: NSRange(location: 0, length: attributed.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
-            ) ?? try? attributed.data(
+            )
+            let rtf = try? attributed.data(
                 from: NSRange(location: 0, length: attributed.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
             )
+            return rtfd ?? rtf
         }
     }
 }

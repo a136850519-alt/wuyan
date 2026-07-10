@@ -130,10 +130,17 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
-    func markClean(id: UUID) throws {
+    /// 条件更新：只有条目的 contentHash 与推送快照时一致，才清除 dirty 标记。
+    /// 防止推送期间用户又编辑了同一条目，新编辑被误清 dirty 导致永远不再推送。
+    func markClean(id: UUID, expectedHash: String) throws {
         try writer.write { db in
+            // 条件更新：hash 匹配才清 dirty
+            try db.execute(
+                sql: "UPDATE entry SET dirty = 0 WHERE id = ? AND contentHash = ?",
+                arguments: [id.uuidString, expectedHash]
+            )
+            // baseline 始终写入（代表推送版本的水位线，不依赖 hash 条件）
             if let entry = try Entry.fetchOne(db, key: id.uuidString) {
-                try db.execute(sql: "UPDATE entry SET dirty = 0 WHERE id = ?", arguments: [id.uuidString])
                 try db.execute(
                     sql: """
                     INSERT INTO sync_baseline(entryId, hash, updatedAt)
