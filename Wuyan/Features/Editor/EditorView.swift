@@ -430,14 +430,16 @@ private final class QuickLookPreviewer: NSObject, QLPreviewPanelDataSource, QLPr
     }
 }
 
+// R2-8: MediaThumb 不再内联 NSImage(contentsOfFile:)，改通过 EnvironmentObject 调用 mediaStore
 private struct MediaThumb: View {
     var asset: MediaAsset
+    @EnvironmentObject private var appState: AppState
+    @State private var thumbnailImage: NSImage?
 
     var body: some View {
         Group {
-            // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
-            if let absolutePath = asset.absoluteThumbnailPath, let image = NSImage(contentsOfFile: absolutePath) {
-                Image(nsImage: image)
+            if let thumbnailImage {
+                Image(nsImage: thumbnailImage)
                     .resizable()
                     .scaledToFill()
             } else {
@@ -447,6 +449,10 @@ private struct MediaThumb: View {
         }
         .frame(width: 34, height: 34)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task {
+            // R2-8: 通过 mediaStore 协议方法异步加载缩略图
+            thumbnailImage = await appState.mediaStore.thumbnail(for: asset)
+        }
     }
 
     private var icon: String {
