@@ -37,6 +37,10 @@ enum SettingKey {
     // MARK: - 加密
     static let cryptoEnabled = "settings.crypto.enabled"
     static let cryptoSalt = "settings.crypto.salt"
+
+    // MARK: - 归档与同步
+    // R2-6: 从 AppState/SyncCoordinator 硬编码提取到此
+    static let archivedYears = "archive.years"
 }
 
 /// 类型化访问器：读 UserDefaults 时提供默认值，避免散落各处。
@@ -126,5 +130,14 @@ enum AppSettings {
     }
     static var cryptoSalt: String? {
         defaults.string(forKey: SettingKey.cryptoSalt)
+    }
+
+    // MARK: - 归档与同步
+    // R2-6: 替代 AppState/SyncCoordinator 中的硬编码 "archive.years"
+    static var archivedYears: [Int] {
+        defaults.array(forKey: SettingKey.archivedYears) as? [Int] ?? []
+    }
+    static func setArchivedYears(_ years: [Int]) {
+        defaults.set(years, forKey: SettingKey.archivedYears)
     }
 }

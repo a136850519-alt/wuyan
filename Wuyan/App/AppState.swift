@@ -56,7 +56,8 @@ final class AppState: ObservableObject {
     /// 订阅 SyncCoordinator 的 objectWillChange，使其 @Published 变化能触发本对象 UI 刷新。
     private var syncCancellable: AnyCancellable?
 
-    private static let archivedYearsKey = "archive.years"
+    // R2-6: 使用 SettingKey 常量替代硬编码字符串
+    private static let archivedYearsKey = SettingKey.archivedYears
 
     init(database: AppDatabase) {
         self.db = database
