@@ -46,6 +46,9 @@ struct SettingsView: View {
     @State private var conflictSummaries: [UUID: EntrySummary] = [:]
     @State private var diagMessage: String?
     @State private var mediaEvictMessage: String?
+    /// R1-1: 缓存媒体统计，避免 body 中每次重算
+    @State private var mediaTotalSize: Int64 = 0
+    @State private var mediaYearSizes: [Int: Int64] = [:]
 
     var body: some View {
         Form {
@@ -297,16 +300,14 @@ struct SettingsView: View {
             }
 
             Section("媒体磁盘") {
-                let totalSize = appState.mediaStore.totalMediaSize()
-                Text("本地媒体总大小：\(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))")
+                Text("本地媒体总大小：\(ByteCountFormatter.string(fromByteCount: mediaTotalSize, countStyle: .file))")
                     .foregroundStyle(.secondary)
-                let yearSizes = appState.mediaStore.mediaSizeByYear()
-                if !yearSizes.isEmpty {
-                    ForEach(yearSizes.keys.sorted().reversed(), id: \.self) { year in
+                if !mediaYearSizes.isEmpty {
+                    ForEach(mediaYearSizes.keys.sorted().reversed(), id: \.self) { year in
                         HStack {
                             Text("\(year) 年")
                             Spacer()
-                            Text(ByteCountFormatter.string(fromByteCount: yearSizes[year] ?? 0, countStyle: .file))
+                            Text(ByteCountFormatter.string(fromByteCount: mediaYearSizes[year] ?? 0, countStyle: .file))
                                 .foregroundStyle(.secondary)
                             Button("清理本地") {
                                 evictYearMedia(year: year)
@@ -354,6 +355,8 @@ struct SettingsView: View {
                 }
             }
             loadConflictSummaries()
+            // R1-1: 延迟加载媒体统计，不阻塞首屏
+            loadMediaStats()
         }
         .onChange(of: appState.syncConflicts) {
             loadConflictSummaries()
@@ -572,10 +575,18 @@ struct SettingsView: View {
             do {
                 let count = try await appState.mediaStore.evictYearMedia(year: year)
                 mediaEvictMessage = "已清理 \(year) 年本地媒体 \(count) 个。"
+                // R1-1: 清理后刷新媒体统计缓存
+                loadMediaStats()
             } catch {
                 mediaEvictMessage = "清理失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    /// R1-1: 延迟加载媒体统计到缓存变量，避免 body 中每次重算
+    private func loadMediaStats() {
+        mediaTotalSize = appState.mediaStore.totalMediaSize()
+        mediaYearSizes = appState.mediaStore.mediaSizeByYear()
     }
 
     private func loadConflictSummaries() {
