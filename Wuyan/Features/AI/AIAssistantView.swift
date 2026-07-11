@@ -5,10 +5,11 @@ struct AIAssistantView: View {
     var entry: Entry?
     @State private var output = ""
     @State private var isRunning = false
-    @State private var pendingAction: (() -> Void)?
-    @State private var showsCloudConfirm = false
     @State private var question = ""
     @State private var sourceEntryIds: [UUID] = []
+
+    /// R2-2: 共享门控实例
+    @StateObject private var consentGate = CloudAIConsentGateModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -49,17 +50,8 @@ struct AIAssistantView: View {
                 }
             }
         }
-        .alert("将发送内容到云端 AI", isPresented: $showsCloudConfirm) {
-            Button("取消", role: .cancel) { pendingAction = nil }
-            Button("信任本会话") {
-                appState.trustCloudForSession = true
-                pendingAction?()
-                pendingAction = nil
-            }
-            Button("继续") { pendingAction?(); pendingAction = nil }
-        } message: {
-            Text("将发送当前条目或最近日记摘要用于生成结果。")
-        }
+        // R2-2: 使用共享云端 AI 授权门控，替代本视图内重复的 showsCloudConfirm + pendingAction
+        .cloudAIConsentAlert(gate: consentGate)
     }
 
     private func runPrompt() {
@@ -113,12 +105,8 @@ struct AIAssistantView: View {
             output = "当前板块已标记为禁止云端 AI。"
             return
         }
-        if isCloudAISelected, !appState.trustCloudForSession {
-            pendingAction = { execute(work) }
-            showsCloudConfirm = true
-            return
-        }
-        execute(work)
+        // R2-2: 使用共享门控替代 isCloudAISelected 字符串白名单
+        consentGate.gate(appState: appState) { execute(work) }
     }
 
     private func runStream(_ work: @escaping () async throws -> AsyncThrowingStream<String, Error>) {
@@ -127,12 +115,8 @@ struct AIAssistantView: View {
             output = "当前板块已标记为禁止云端 AI。"
             return
         }
-        if isCloudAISelected, !appState.trustCloudForSession {
-            pendingAction = { executeStream(work) }
-            showsCloudConfirm = true
-            return
-        }
-        executeStream(work)
+        // R2-2: 使用共享门控替代 isCloudAISelected 字符串白名单
+        consentGate.gate(appState: appState) { executeStream(work) }
     }
 
     private func execute(_ work: @escaping () async throws -> String) {
@@ -178,16 +162,12 @@ struct AIAssistantView: View {
         }
     }
 
+    // R2-2: 使用 AIService.requiresCloudConsent 替代字符串白名单
     private func cloudBlockedBySensitiveBoard() -> Bool {
-        guard isCloudAISelected,
+        guard appState.aiService.requiresCloudConsent,
               let entry,
               let board = try? appState.boards.board(id: entry.boardId)
         else { return false }
         return board.disallowCloudAI
-    }
-
-    private var isCloudAISelected: Bool {
-        let provider = AppSettings.aiProvider
-        return provider == "zhipu" || provider == "claude"
     }
 }

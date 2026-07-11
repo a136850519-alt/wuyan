@@ -14,6 +14,13 @@ final class AIService: PoeticGenerator {
         self.ritualPolishingEnabled = ritualPolishingEnabled
     }
 
+    /// R2-2: 云端 AI 是否需要用户确认授权。
+    /// 基于 provider.isLocal 判定，替代旧的字符串白名单（"zhipu" || "claude"），
+    /// 新增云 Provider 时自动纳入，无需在此处追加。
+    var requiresCloudConsent: Bool {
+        provider?.isLocal == false
+    }
+
     /// 过滤掉敏感板块的条目，只保留可云端发送的条目。
     /// 替代旧的 ensureCloudAllowed（全拒绝策略），改为只过滤不拒绝。
     func filterCloudAllowed(_ entries: [Entry]) -> [Entry] {

@@ -4,8 +4,8 @@ struct RitualView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = RitualViewModel()
-    @State private var showsCloudConfirm = false
-    @State private var pendingGenerate = false
+    /// R2-2: 共享云端 AI 授权门控
+    @StateObject private var consentGate = CloudAIConsentGateModel()
 
     var body: some View {
         VStack {
@@ -24,20 +24,8 @@ struct RitualView: View {
         .task {
             await viewModel.prepare(appState: appState)
         }
-        .alert("将发送内容到云端 AI", isPresented: $showsCloudConfirm) {
-            Button("取消", role: .cancel) { pendingGenerate = false }
-            Button("信任本会话") {
-                appState.trustCloudForSession = true
-                pendingGenerate = false
-                Task { await viewModel.generate(appState: appState) }
-            }
-            Button("仅本次") {
-                pendingGenerate = false
-                Task { await viewModel.generate(appState: appState) }
-            }
-        } message: {
-            Text("仪式润色将发送内容到云端 AI 生成诗意批注。")
-        }
+        // R2-2: 使用共享云端 AI 授权门控，替代本视图内重复的 showsCloudConfirm alert
+        .cloudAIConsentAlert(gate: consentGate)
     }
 
     private var summaryStep: some View {
@@ -101,10 +89,8 @@ struct RitualView: View {
                     .buttonStyle(WuyanPrimaryButtonStyle())
                 } else {
                     Button {
-                        if isCloudAISelected && !appState.trustCloudForSession {
-                            pendingGenerate = true
-                            showsCloudConfirm = true
-                        } else {
+                        // R2-2: 使用共享门控替代 isCloudAISelected 字符串白名单
+                        consentGate.gate(appState: appState) {
                             Task { await viewModel.generate(appState: appState) }
                         }
                     } label: {
@@ -166,11 +152,6 @@ struct RitualView: View {
                 .buttonStyle(WuyanSecondaryButtonStyle())
             }
         }
-    }
-
-    private var isCloudAISelected: Bool {
-        let provider = AppSettings.aiProvider
-        return provider == "zhipu" || provider == "claude"
     }
 }
 
