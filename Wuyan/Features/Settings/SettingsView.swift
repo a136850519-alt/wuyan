@@ -30,25 +30,31 @@ struct SettingsView: View {
     @State private var zhipuAPIKey = ""
     @State private var claudeAPIKey = ""
     @State private var reminderTimes: [Date] = []
-    @State private var reminderMessage: String?
-    @State private var connectionMessage: String?
     @State private var isTestingStorage = false
-    @State private var storageSaveMessage: String?
-    @State private var exportMessage: String?
-    @State private var aiHealthMessage: String?
-    @State private var aiSaveMessage: String?
     @State private var isTestingAI = false
     @State private var cryptoPassphrase = ""
     @State private var cryptoConfirm = ""
-    @State private var cryptoMessage: String?
     @State private var babyBirthday = Date()
-    @State private var babyBirthdayMessage: String?
     @State private var conflictSummaries: [UUID: EntrySummary] = [:]
-    @State private var diagMessage: String?
-    @State private var mediaEvictMessage: String?
+    /// R2-10: 统一消息状态，替代 10 个并行 @State message 变量
+    @State private var statusMessage: (section: String, text: String)?
+    /// R2-10: 自动过期定时器
+    @State private var statusTimer: Timer?
     /// R1-1: 缓存媒体统计，避免 body 中每次重算
     @State private var mediaTotalSize: Int64 = 0
     @State private var mediaYearSizes: [Int: Int64] = [:]
+
+    // R2-10: Section 名称常量
+    private enum StatusSection {
+        static let storage = "storage"
+        static let ai = "ai"
+        static let reminder = "reminder"
+        static let baby = "baby"
+        static let export = "export"
+        static let crypto = "crypto"
+        static let media = "media"
+        static let diag = "diag"
+    }
 
     var body: some View {
         Form {
@@ -120,14 +126,8 @@ struct SettingsView: View {
                     Text(syncMessage)
                         .foregroundStyle(.secondary)
                 }
-                if let connectionMessage {
-                    Text(connectionMessage)
-                        .foregroundStyle(.secondary)
-                }
-                if let storageSaveMessage {
-                    Text(storageSaveMessage)
-                        .foregroundStyle(.secondary)
-                }
+                // R2-10: 统一消息展示
+                sectionStatus(for: StatusSection.storage)
 
                 if !appState.syncConflicts.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -199,14 +199,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(isTestingAI)
-                if let aiHealthMessage {
-                    Text(aiHealthMessage)
-                        .foregroundStyle(.secondary)
-                }
-                if let aiSaveMessage {
-                    Text(aiSaveMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.ai)
                 Text("云端模式会在发送日记内容前提示发送范围。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -237,10 +230,7 @@ struct SettingsView: View {
                     .tint(Palette.cinnabar)
                 Toggle("自动采集位置与天气", isOn: $metadataEnabled)
                     .tint(Palette.cinnabar)
-                if let reminderMessage {
-                    Text(reminderMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.reminder)
                 Text("天气使用无需 API Key 的 Open-Meteo；授权失败不会影响写作。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -255,10 +245,7 @@ struct SettingsView: View {
                     Text("当前年龄：\(ageText)")
                         .foregroundStyle(.secondary)
                 }
-                if let babyBirthdayMessage {
-                    Text(babyBirthdayMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.baby)
             }
 
             Section("外观") {
@@ -276,10 +263,7 @@ struct SettingsView: View {
                 Button("从 JSON 备份还原") {
                     importJSONBackup()
                 }
-                if let exportMessage {
-                    Text(exportMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.export)
             }
 
             Section("加密") {
@@ -290,10 +274,7 @@ struct SettingsView: View {
                 Button("保存加密设置") {
                     saveCryptoSettings()
                 }
-                if let cryptoMessage {
-                    Text(cryptoMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.crypto)
                 Text("开启后新上传到远端的条目、daynote、manifest 与媒体会加密；丢失口令无法恢复。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -317,10 +298,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                if let mediaEvictMessage {
-                    Text(mediaEvictMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.media)
                 Text("清理仅删除已上传远端的本地副本，远端数据不受影响。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -337,10 +315,7 @@ struct SettingsView: View {
                 Button("导出诊断日志") {
                     exportDiagnosticLog()
                 }
-                if let diagMessage {
-                    Text(diagMessage)
-                        .foregroundStyle(.secondary)
-                }
+                sectionStatus(for: StatusSection.diag)
             }
         }
         .formStyle(.grouped)
@@ -363,6 +338,37 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - R2-10: 统一消息
+
+    /// 显示某个 Section 的状态消息（如果有）
+    @ViewBuilder
+    private func sectionStatus(for section: String) -> some View {
+        if let msg = statusMessage, msg.section == section {
+            Text(msg.text)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 设置状态消息，5 秒后自动清除
+    private func setStatus(_ section: String, _ text: String) {
+        statusMessage = (section, text)
+        statusTimer?.invalidate()
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { _ in
+            Task { @MainActor in
+                self.statusMessage = nil
+            }
+        }
+    }
+
+    /// 清除某个 Section 的状态消息
+    private func clearStatus(_ section: String) {
+        if let msg = statusMessage, msg.section == section {
+            statusMessage = nil
+        }
+    }
+
+    // MARK: - 数据加载
+
     private func loadSecureSettings() {
         webDAVPassword = SecureSettings.load(SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
         s3SecretKey = SecureSettings.load(SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey)
@@ -380,14 +386,14 @@ struct SettingsView: View {
     private func testStorage() {
         guard !isTestingStorage else { return }
         saveStorageSettings(showMessage: false)
-        connectionMessage = "正在测试连接…"
+        setStatus(StatusSection.storage, "正在测试连接…")
         isTestingStorage = true
 
         let provider: any RemoteStorageProvider
         do {
             provider = try ProviderFactory.makeRemoteStorageProvider()
         } catch {
-            connectionMessage = error.localizedDescription
+            setStatus(StatusSection.storage, error.localizedDescription)
             isTestingStorage = false
             return
         }
@@ -395,12 +401,12 @@ struct SettingsView: View {
             do {
                 try await provider.testConnection()
                 await MainActor.run {
-                    connectionMessage = "连接成功，已完成读写探测。"
+                    setStatus(StatusSection.storage, "连接成功，已完成读写探测。")
                     isTestingStorage = false
                 }
             } catch {
                 await MainActor.run {
-                    connectionMessage = error.localizedDescription
+                    setStatus(StatusSection.storage, error.localizedDescription)
                     isTestingStorage = false
                 }
             }
@@ -422,8 +428,7 @@ struct SettingsView: View {
         }
 
         if showMessage {
-            storageSaveMessage = "存储配置已保存。"
-            connectionMessage = nil
+            setStatus(StatusSection.storage, "存储配置已保存。")
         }
     }
 
@@ -439,9 +444,9 @@ struct SettingsView: View {
                 try service.exportMarkdown(entries: entries, mediaDAO: appState.db.mediaAssetDAO, to: directory.appendingPathComponent("Markdown", isDirectory: true))
                 try service.exportJSON(entries: entries, to: directory.appendingPathComponent("wuyan-backup.json"))
                 try service.exportPDF(entries: entries, to: directory.appendingPathComponent("wuyan-export.pdf"))
-                exportMessage = "已导出 \(entries.count) 篇。"
+                setStatus(StatusSection.export, "已导出 \(entries.count) 篇。")
             } catch {
-                exportMessage = error.localizedDescription
+                setStatus(StatusSection.export, error.localizedDescription)
             }
         }
     }
@@ -454,9 +459,9 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 let count = try ExportService().importJSON(from: url, database: appState.db)
-                exportMessage = "已还原 \(count) 篇。"
+                setStatus(StatusSection.export, "已还原 \(count) 篇。")
             } catch {
-                exportMessage = error.localizedDescription
+                setStatus(StatusSection.export, error.localizedDescription)
             }
         }
     }
@@ -465,17 +470,17 @@ struct SettingsView: View {
         Task {
             let scheduler = ReminderScheduler()
             guard await scheduler.requestAuthorization() else {
-                await MainActor.run { reminderMessage = "通知授权未开启。" }
+                await MainActor.run { setStatus(StatusSection.reminder, "通知授权未开启。") }
                 return
             }
             AppState.saveReminderTimesToDefaults(reminderTimes)
             if reminderEnabled {
                 let components = reminderTimes.map { Calendar.current.dateComponents([.hour, .minute], from: $0) }
                 await scheduler.setDailyReminders(components)
-                await MainActor.run { reminderMessage = "已保存 \(components.count) 个提醒。" }
+                await MainActor.run { setStatus(StatusSection.reminder, "已保存 \(components.count) 个提醒。") }
             } else {
                 await scheduler.cancelAll()
-                await MainActor.run { reminderMessage = "提醒已关闭。" }
+                await MainActor.run { setStatus(StatusSection.reminder, "提醒已关闭。") }
             }
         }
     }
@@ -487,7 +492,7 @@ struct SettingsView: View {
     private func saveBabyBirthday() {
         do {
             guard let board = growthBoard() else {
-                babyBirthdayMessage = "没有找到宝贝成长记录板块。"
+                setStatus(StatusSection.baby, "没有找到宝贝成长记录板块。")
                 return
             }
             let updated = Board(
@@ -502,16 +507,16 @@ struct SettingsView: View {
                 createdAt: board.createdAt
             )
             try appState.boards.save(updated)
-            babyBirthdayMessage = "宝贝生日已保存。"
+            setStatus(StatusSection.baby, "宝贝生日已保存。")
         } catch {
-            babyBirthdayMessage = error.localizedDescription
+            setStatus(StatusSection.baby, error.localizedDescription)
         }
     }
 
     private func checkAIHealth() {
         saveAISettings(showMessage: false)
         appState.reloadAISettings()
-        aiHealthMessage = "正在测试连接…"
+        setStatus(StatusSection.ai, "正在测试连接…")
         isTestingAI = true
         Task {
             do {
@@ -521,12 +526,12 @@ struct SettingsView: View {
                     AIMessage(role: .user, content: "ping")
                 ], options: AIOptions(temperature: 0, maxTokens: 8))
                 await MainActor.run {
-                    aiHealthMessage = result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "连接成功。" : "连接成功：\(result)"
+                    setStatus(StatusSection.ai, result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "连接成功。" : "连接成功：\(result)")
                     isTestingAI = false
                 }
             } catch {
                 await MainActor.run {
-                    aiHealthMessage = error.localizedDescription
+                    setStatus(StatusSection.ai, error.localizedDescription)
                     isTestingAI = false
                 }
             }
@@ -552,33 +557,32 @@ struct SettingsView: View {
         appState.reloadAISettings()
 
         if showMessage {
-            aiSaveMessage = "AI 配置已保存。"
-            aiHealthMessage = nil
+            setStatus(StatusSection.ai, "AI 配置已保存。")
         }
     }
 
     private func saveCryptoSettings() {
         if cryptoPassphrase.isEmpty {
-            cryptoMessage = cryptoEnabled ? "加密已开启；未填写新口令，已保留现有口令。" : "加密已关闭。"
+            setStatus(StatusSection.crypto, cryptoEnabled ? "加密已开启；未填写新口令，已保留现有口令。" : "加密已关闭。")
             return
         }
         guard cryptoPassphrase == cryptoConfirm || cryptoConfirm.isEmpty else {
-            cryptoMessage = "两次口令不一致。"
+            setStatus(StatusSection.crypto, "两次口令不一致。")
             return
         }
         SecureSettings.save(cryptoPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
-        cryptoMessage = cryptoEnabled ? "加密设置已保存。请牢记口令。" : "加密已关闭。"
+        setStatus(StatusSection.crypto, cryptoEnabled ? "加密设置已保存。请牢记口令。" : "加密已关闭。")
     }
 
     private func evictYearMedia(year: Int) {
         Task {
             do {
                 let count = try await appState.mediaStore.evictYearMedia(year: year)
-                mediaEvictMessage = "已清理 \(year) 年本地媒体 \(count) 个。"
+                setStatus(StatusSection.media, "已清理 \(year) 年本地媒体 \(count) 个。")
                 // R1-1: 清理后刷新媒体统计缓存
                 loadMediaStats()
             } catch {
-                mediaEvictMessage = "清理失败：\(error.localizedDescription)"
+                setStatus(StatusSection.media, "清理失败：\(error.localizedDescription)")
             }
         }
     }
@@ -625,11 +629,11 @@ struct SettingsView: View {
                 let outputURL = directory.appendingPathComponent("wuyan-diagnostic-\(Int(Date().timeIntervalSince1970)).log")
                 try lines.joined(separator: "\n").write(to: outputURL, atomically: true, encoding: .utf8)
                 await MainActor.run {
-                    diagMessage = "已导出 \(entries.count) 条日志。"
+                    setStatus(StatusSection.diag, "已导出 \(entries.count) 条日志。")
                 }
             } catch {
                 await MainActor.run {
-                    diagMessage = "导出失败：\(error.localizedDescription)"
+                    setStatus(StatusSection.diag, "导出失败：\(error.localizedDescription)")
                 }
             }
         }
