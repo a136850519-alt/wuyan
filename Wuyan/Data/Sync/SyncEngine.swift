@@ -37,7 +37,7 @@ actor SyncEngine {
         database: AppDatabase,
         crypto: SyncCrypto? = nil,
         archivedYears: Set<Int> = [],
-        backendFingerprint: String = "",
+        backendFingerprint: String,
         progressHandler: ProgressHandler? = nil
     ) {
         self.provider = provider
@@ -45,7 +45,10 @@ actor SyncEngine {
         self.crypto = crypto
         self.archivedYears = archivedYears
         self.progressHandler = progressHandler
-        self.backendFingerprint = backendFingerprint
+        // R2-5: 空指纹回退全局 key 的路径已删除；空串时从 ProviderFactory 动态推导
+        self.backendFingerprint = backendFingerprint.isEmpty
+            ? ProviderFactory.backendFingerprint()
+            : backendFingerprint
     }
 
     private func year(ofDayKey key: String) -> Int? {

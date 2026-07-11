@@ -323,7 +323,7 @@ struct SyncEngineBasicTests {
             return m
         }()
 
-        let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
+        let engine = SyncEngine(provider: mock, database: db, archivedYears: [], backendFingerprint: "test-fp")
         do {
             _ = try await engine.syncNow()
             Issue.record("5xx 应该抛错，不应成功")
@@ -361,7 +361,7 @@ struct SyncEngineBasicTests {
         let manifestData = try JSONEncoder.wuyan.encode(manifest)
         mock.files["/Wuyan/manifest.json"] = manifestData
 
-        let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
+        let engine = SyncEngine(provider: mock, database: db, archivedYears: [], backendFingerprint: "test-fp")
         let report = try await engine.syncNow()
 
         #expect(report.pulled == 1)
@@ -385,7 +385,7 @@ struct SyncEngineBasicTests {
         let emptyManifest = Manifest(schemaVersion: 2, boards: [], daynotes: [], entries: [])
         mock.files["/Wuyan/manifest.json"] = try JSONEncoder.wuyan.encode(emptyManifest)
 
-        let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
+        let engine = SyncEngine(provider: mock, database: db, archivedYears: [], backendFingerprint: "test-fp")
         let report = try await engine.syncNow()
 
         #expect(report.pushed >= 1)
