@@ -64,9 +64,9 @@ struct AIAssistantView: View {
 
     private func runPrompt() {
         runStream {
-            let entries = (try? appState.entries.timeline(filter: .all)) ?? []
-            let limited = Array(entries.prefix(30))
-            return appState.aiService.streamWritingPrompt(context: WritingContext(date: Date(), weather: entry?.weather, recentEntries: limited))
+            // R1-3: 使用 recentEntries 替代 timeline(filter: .all) 全量加载
+            let entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
+            return appState.aiService.streamWritingPrompt(context: WritingContext(date: Date(), weather: entry?.weather, recentEntries: entries))
         }
     }
 
@@ -82,8 +82,9 @@ struct AIAssistantView: View {
 
     private func summarizeRecent() {
         runStream {
-            let entries = (try? appState.entries.timeline(filter: .all)) ?? []
-            return appState.aiService.streamSummary(entries: Array(entries.prefix(30)), period: .month)
+            // R1-3: 使用 recentEntries 替代 timeline(filter: .all) 全量加载
+            let entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
+            return appState.aiService.streamSummary(entries: entries, period: .month)
         }
     }
 
@@ -101,8 +102,9 @@ struct AIAssistantView: View {
     }
 
     private func nonSensitiveEntries() -> [Entry] {
-        let entries = (try? appState.entries.timeline(filter: .all)) ?? []
-        return appState.aiService.filterCloudAllowed(Array(entries.prefix(30)))
+        // R1-3: 使用 recentEntries 替代 timeline(filter: .all) 全量加载
+        let entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
+        return appState.aiService.filterCloudAllowed(entries)
     }
 
     private func run(_ work: @escaping () async throws -> String) {

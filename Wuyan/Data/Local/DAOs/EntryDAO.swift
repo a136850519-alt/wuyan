@@ -182,6 +182,18 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// R1-3: 取最近 N 条完整条目（含 body），供 AI 等需要内容的场景。
+    /// 替代 timeline(filter: .all) 全量加载 + prefix(30) 的模式。
+    func recentEntries(limit: Int = 30) throws -> [Entry] {
+        try writer.read { db in
+            try Entry
+                .filter(Entry.Columns.deleted == false)
+                .order(Entry.Columns.journalDate.desc, Entry.Columns.updatedAt.desc)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
     public func entry(id: UUID) throws -> Entry? {
         try writer.read { db in
             try Entry.fetchOne(db, key: id.uuidString)
