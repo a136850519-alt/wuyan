@@ -81,6 +81,20 @@ final class SyncCoordinator: ObservableObject {
         syncNow(archivedYears: Set(archivedYears))
     }
 
+    /// R0-5: 加密口令预检。当 cryptoEnabled 时验证口令非空。
+    /// 返回 false 表示口令缺失，调用方应 early return。已清空 syncMessage/syncProgress 并设置错误。
+    private func checkCryptoPassphrase() -> Bool {
+        guard AppSettings.cryptoEnabled else { return true }
+        let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
+        if passphrase.isEmpty {
+            syncMessage = nil
+            syncProgress = nil
+            setSyncError("请先在设置中填写同步加密口令。")
+            return false
+        }
+        return true
+    }
+
     init(database: AppDatabase) {
         self.db = database
         self.entries = database.entryDAO
@@ -104,15 +118,8 @@ final class SyncCoordinator: ObservableObject {
             setSyncError(error.localizedDescription)
             return
         }
-        if AppSettings.cryptoEnabled {
-            let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
-            if passphrase.isEmpty {
-                syncMessage = nil
-                syncProgress = nil
-                setSyncError("请先在设置中填写同步加密口令。")
-                return
-            }
-        }
+        // R0-5: 加密守卫（统一提取）
+        guard checkCryptoPassphrase() else { return }
         let dbRef = db
         let fingerprint = ProviderFactory.backendFingerprint()
         Task {
@@ -152,6 +159,9 @@ final class SyncCoordinator: ObservableObject {
         syncMessage = "\(year) 年归档中…"
         syncProgress = SyncProgress(phase: "\(year) 年归档准备中", completedUnitCount: 0, totalUnitCount: 1)
         clearSyncError()
+
+        // R0-5: 加密守卫——归档前必须验证加密口令
+        guard checkCryptoPassphrase() else { return }
 
         let provider: any RemoteStorageProvider
         do {
@@ -232,6 +242,9 @@ final class SyncCoordinator: ObservableObject {
         syncMessage = "\(year) 年下载中…"
         syncProgress = SyncProgress(phase: "\(year) 年下载准备中", completedUnitCount: 0, totalUnitCount: 1)
         clearSyncError()
+
+        // R0-5: 加密守卫——下载前必须验证加密口令
+        guard checkCryptoPassphrase() else { return }
 
         let provider: any RemoteStorageProvider
         do {
