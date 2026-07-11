@@ -7,4 +7,5 @@ enum WuyanLog {
     static let ai = Logger(subsystem: "com.wuyan.app", category: "ai")
     static let db = Logger(subsystem: "com.wuyan.app", category: "db")
     static let security = Logger(subsystem: "com.wuyan.app", category: "security")
+    static let general = Logger(subsystem: "com.wuyan.app", category: "general")
 }

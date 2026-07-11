@@ -63,7 +63,23 @@ final class AppState: ObservableObject {
         self.boards = database.boardDAO
         self.entries = database.entryDAO
         self.dayNotes = database.dayNoteDAO
-        self.mediaStore = try! LocalMediaStore(database: database)
+        // R2-4: 替换 try! 为安全初始化，失败降级而非崩溃
+        let mediaStore: LocalMediaStore
+        do {
+            mediaStore = try LocalMediaStore(database: database)
+        } catch {
+            WuyanLog.general.error("LocalMediaStore 初始化失败：\(error.localizedDescription)")
+            // 降级：创建空目录后重试
+            let support = LocalMediaStore.mediaRootURL
+            try? FileManager.default.createDirectory(at: support.appendingPathComponent("media", isDirectory: true), withIntermediateDirectories: true)
+            // 第二次尝试
+            do {
+                mediaStore = try LocalMediaStore(database: database)
+            } catch {
+                fatalError("LocalMediaStore 初始化失败且无法降级：\(error)")
+            }
+        }
+        self.mediaStore = mediaStore
         self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore)
         self.aiService = AIService(
             provider: ProviderFactory.makeAIProvider(),
@@ -73,6 +89,12 @@ final class AppState: ObservableObject {
         self.aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
         let stored = UserDefaults.standard.array(forKey: Self.archivedYearsKey) as? [Int] ?? []
         self.archivedYears = stored.sorted(by: >)
+
+        // R2-3: 通过 AppMigrationRunner 触发媒体 Caches 迁移（v2）
+        // 这里只执行 v2 迁移，v1（Keychain）已在 WuyanApp.init 中执行
+        AppMigrationRunner.run { [mediaStore] in
+            try mediaStore.performCachesMigration()
+        }
 
         // R0-1: 将 SyncCoordinator 的 objectWillChange 转发到 AppState，
         // 使 SettingsView/SidebarView 通过 appState.syncProgress 等计算属性读取时能刷新。

@@ -58,12 +58,19 @@ final class LocalMediaStore: MediaStoreProtocol {
         let supportURL = Self.mediaRootURL
         self.mediaURL = supportURL.appendingPathComponent("media", isDirectory: true)
         try fileManager.createDirectory(at: mediaURL, withIntermediateDirectories: true)
-        try migrateFromCachesIfNeeded()
+        // R2-3/R2-4: 迁移移入 AppMigrationRunner，init 不再执行迁移
+        // migrateFromCachesIfNeeded() 改为公开方法供 MigrationRunner 调用
     }
 
-    // MARK: - Migration from Caches
+    // MARK: - Migration from Caches (R2-3: 由 AppMigrationRunner 调用)
 
     private static let migrationKey = "wuyan.media.migratedFromCaches"
+
+    /// R2-3: 供 AppMigrationRunner 调用的媒体迁移入口。
+    /// 幂等：已迁移时直接返回。
+    func performCachesMigration() throws {
+        try migrateFromCachesIfNeeded()
+    }
 
     private func migrateFromCachesIfNeeded() throws {
         guard !UserDefaults.standard.bool(forKey: Self.migrationKey) else { return }
