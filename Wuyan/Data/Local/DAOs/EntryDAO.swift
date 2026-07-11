@@ -215,6 +215,8 @@ public struct EntryDAO: EntryRepository {
 
     /// 条件更新：只有条目的 contentHash 与推送快照时一致，才清除 dirty 标记。
     /// 防止推送期间用户又编辑了同一条目，新编辑被误清 dirty 导致永远不再推送。
+    /// R0-3: baseline 写入 expectedHash（推送时的 hash），而非 entry.contentHash（当前可能已变更），
+    /// 避免三方合并时 baseline 与实际推送版本不一致导致静默数据丢失。
     func markClean(id: UUID, expectedHash: String) throws {
         try writer.write { db in
             // 条件更新：hash 匹配才清 dirty
@@ -222,7 +224,7 @@ public struct EntryDAO: EntryRepository {
                 sql: "UPDATE entry SET dirty = 0 WHERE id = ? AND contentHash = ?",
                 arguments: [id.uuidString, expectedHash]
             )
-            // baseline 始终写入（代表推送版本的水位线，不依赖 hash 条件）
+            // baseline 写入推送时的 expectedHash（代表推送版本的水位线）
             if let entry = try Entry.fetchOne(db, key: id.uuidString) {
                 try db.execute(
                     sql: """
@@ -230,7 +232,7 @@ public struct EntryDAO: EntryRepository {
                     VALUES (?, ?, ?)
                     ON CONFLICT(entryId) DO UPDATE SET hash = excluded.hash, updatedAt = excluded.updatedAt
                     """,
-                    arguments: [id.uuidString, entry.contentHash, entry.updatedAt]
+                    arguments: [id.uuidString, expectedHash, entry.updatedAt]
                 )
             }
         }
