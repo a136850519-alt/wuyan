@@ -28,6 +28,8 @@ final class LocalMediaStore: MediaStoreProtocol {
     }()
 
     /// 将 DB 中的相对路径解析为绝对路径。兼容旧版绝对路径（直接返回）。
+    /// R2-1: 外部调用应使用 MediaAsset.absoluteLocalPath / absoluteThumbnailPath，
+    /// 此方法仅在 MediaStore 内部和 MediaAsset 模型层使用。
     static func resolvePath(_ relative: String) -> String {
         // 如果已经是绝对路径（旧数据兼容），直接返回
         if relative.hasPrefix("/") { return relative }
@@ -41,6 +43,7 @@ final class LocalMediaStore: MediaStoreProtocol {
     }
 
     /// 将绝对路径转为相对路径（相对 mediaRootURL）。无法转换时返回原路径。
+    /// R2-1: 外部不应直接调用，仅 MediaStore 内部使用
     static func toRelativePath(_ absolute: String) -> String {
         let prefix = mediaRootURL.path + "/"
         if absolute.hasPrefix(prefix) {

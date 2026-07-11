@@ -510,7 +510,8 @@ actor SyncEngine {
         var newlyUploaded: [String] = []
         for asset in assets {
             guard let localPath = asset.localPath else { continue }
-            let absoluteLocalPath = LocalMediaStore.resolvePath(localPath)
+            // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+            let absoluteLocalPath = asset.absoluteLocalPath!
             let remotePath = crypto == nil
                 ? SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
                 : SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
@@ -533,7 +534,8 @@ actor SyncEngine {
             }
 
             if let thumbnailPath = asset.thumbnailPath {
-                let absoluteThumbnailPath = LocalMediaStore.resolvePath(thumbnailPath)
+                // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+                let absoluteThumbnailPath = asset.absoluteThumbnailPath!
                 let thumbnailRemotePath = SyncPaths.thumbnailPath(sha256: asset.sha256)
                 if !cache.contains(thumbnailRemotePath) {
                     if !(try await provider.exists(thumbnailRemotePath)) {

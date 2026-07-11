@@ -321,8 +321,8 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func downloadMediaIfNeeded(_ asset: MediaAsset) async throws -> URL? {
-        if let localPath = asset.localPath {
-            let absolutePath = LocalMediaStore.resolvePath(localPath)
+        // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+        if let absolutePath = asset.absoluteLocalPath {
             if FileManager.default.fileExists(atPath: absolutePath) {
                 return URL(fileURLWithPath: absolutePath)
             }
@@ -344,8 +344,8 @@ final class SyncCoordinator: ObservableObject {
     }
 
     private func downloadThumbnailIfNeeded(_ asset: MediaAsset) async throws -> Bool {
-        if let thumbnailPath = asset.thumbnailPath {
-            let absolutePath = LocalMediaStore.resolvePath(thumbnailPath)
+        // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+        if let absolutePath = asset.absoluteThumbnailPath {
             if FileManager.default.fileExists(atPath: absolutePath) {
                 return true
             }

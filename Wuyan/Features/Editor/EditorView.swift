@@ -435,7 +435,8 @@ private struct MediaThumb: View {
 
     var body: some View {
         Group {
-            if let path = asset.thumbnailPath, let image = NSImage(contentsOfFile: LocalMediaStore.resolvePath(path)) {
+            // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+            if let absolutePath = asset.absoluteThumbnailPath, let image = NSImage(contentsOfFile: absolutePath) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()

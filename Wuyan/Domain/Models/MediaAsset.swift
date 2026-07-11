@@ -26,6 +26,20 @@ public struct MediaAsset: Identifiable, Codable, Equatable, FetchableRecord, Per
     public var exifLat: Double?
     public var exifLon: Double?
 
+    // MARK: - R2-1: 绝对路径计算属性（收口 resolvePath 到模型层）
+
+    /// 本地文件的绝对路径。nil 若 localPath 为空。
+    public var absoluteLocalPath: String? {
+        guard let localPath else { return nil }
+        return LocalMediaStore.resolvePath(localPath)
+    }
+
+    /// 缩略图的绝对路径。nil 若 thumbnailPath 为空。
+    public var absoluteThumbnailPath: String? {
+        guard let thumbnailPath else { return nil }
+        return LocalMediaStore.resolvePath(thumbnailPath)
+    }
+
     public init(
         id: UUID = UUID(),
         entryId: UUID,

@@ -466,27 +466,44 @@ struct WebDAVURLTests {
 @Suite("Media Path Resolution")
 struct MediaPathTests {
 
-    @Test("Relative path roundtrip")
-    func relativePathRoundtrip() {
+    @Test("Relative path roundtrip via model computed properties")
+    func relativePathRoundtripViaModel() {
         let absolute = LocalMediaStore.mediaRootURL
             .appendingPathComponent("media/ab/cdef1234.jpg").path
         let relative = LocalMediaStore.toRelativePath(absolute)
         #expect(relative == "media/ab/cdef1234.jpg")
 
-        let resolved = LocalMediaStore.resolvePath(relative)
-        #expect(resolved == absolute)
+        // R2-1: 测试 MediaAsset 计算属性（收口后的唯一外部接口）
+        var asset = MediaAsset(
+            entryId: UUID(), type: .photo, filename: "test.jpg",
+            mime: "image/jpeg", size: 100, sha256: "abc"
+        )
+        asset.localPath = relative
+        #expect(asset.absoluteLocalPath == absolute)
+
+        asset.thumbnailPath = relative
+        #expect(asset.absoluteThumbnailPath == absolute)
     }
 
-    @Test("Resolve absolute path passes through")
-    func resolveAbsolutePathPassthrough() {
+    @Test("Resolve absolute path passes through via model")
+    func resolveAbsolutePathPassthroughViaModel() {
         let absolute = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
-        let result = LocalMediaStore.resolvePath(absolute)
-        #expect(result == absolute)
+        var asset = MediaAsset(
+            entryId: UUID(), type: .photo, filename: "test.jpg",
+            mime: "image/jpeg", size: 100, sha256: "abc"
+        )
+        asset.localPath = absolute
+        #expect(asset.absoluteLocalPath == absolute)
     }
 
-    @Test("Resolve nil path returns nil")
-    func resolveNilPathReturnsNil() {
-        #expect(LocalMediaStore.resolvePath(nil as String?) == nil)
+    @Test("Nil paths return nil")
+    func resolveNilPathReturnsNilViaModel() {
+        let asset = MediaAsset(
+            entryId: UUID(), type: .photo, filename: "test.jpg",
+            mime: "image/jpeg", size: 100, sha256: "abc"
+        )
+        #expect(asset.absoluteLocalPath == nil)
+        #expect(asset.absoluteThumbnailPath == nil)
     }
 }
 

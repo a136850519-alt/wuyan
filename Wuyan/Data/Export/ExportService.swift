@@ -37,11 +37,13 @@ final class ExportService {
                 return (asset.id, safeName)
             })
             for asset in assets {
-                if let localPath = asset.localPath, let safeName = assetSafeNames[asset.id] {
-                    let absolutePath = LocalMediaStore.resolvePath(localPath)
-                    let destination = mediaDirectory.appendingPathComponent(safeName)
-                    if !FileManager.default.fileExists(atPath: destination.path) {
-                        try? FileManager.default.copyItem(at: URL(fileURLWithPath: absolutePath), to: destination)
+                if let safeName = assetSafeNames[asset.id] {
+                    // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
+                    if let absolutePath = asset.absoluteLocalPath {
+                        let destination = mediaDirectory.appendingPathComponent(safeName)
+                        if !FileManager.default.fileExists(atPath: destination.path) {
+                            try? FileManager.default.copyItem(at: URL(fileURLWithPath: absolutePath), to: destination)
+                        }
                     }
                 }
             }
