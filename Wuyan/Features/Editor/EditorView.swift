@@ -98,7 +98,7 @@ struct EditorView: View {
                 }
 
             HStack {
-                Text("\(viewModel.body.filter { !$0.isWhitespace }.count) 字")
+                Text("\(viewModel.nonWhitespaceCount) 字")
                 Spacer()
                 if viewModel.isDirty {
                     Text("正在保存…")
@@ -121,7 +121,7 @@ struct EditorView: View {
             HStack(spacing: 12) {
                 Button { immersive = false } label: { Label("完成", systemImage: "checkmark") }
                 Spacer()
-                Text("\(viewModel.body.filter { !$0.isWhitespace }.count) 字")
+                Text("\(viewModel.nonWhitespaceCount) 字")
                     .foregroundStyle(.secondary)
                 Button { importMedia() } label: { Label("附件", systemImage: "paperclip") }
                 Button { insertImages() } label: { Label("插图", systemImage: "photo") }

@@ -20,6 +20,8 @@ final class EditorViewModel: ObservableObject {
     @Published var longitude = ""
     @Published var isDirty = false
     @Published var lastSavedAt: Date?
+    /// R1-4: 缓存非空白字数，避免 View body 中每次 body 变化都 O(n) 重算
+    @Published var nonWhitespaceCount: Int = 0
 
     private var saveTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
@@ -38,6 +40,13 @@ final class EditorViewModel: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in
                 self?.scheduleSave()
+            }
+            .store(in: &cancellables)
+
+        // R1-4: body 变化时更新缓存字数
+        $body
+            .sink { [weak self] body in
+                self?.nonWhitespaceCount = body.filter { !$0.isWhitespace }.count
             }
             .store(in: &cancellables)
 
