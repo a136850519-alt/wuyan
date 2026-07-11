@@ -10,7 +10,7 @@ protocol MediaStoreProtocol {
     func importMedia(_ url: URL, entryId: UUID) async throws -> MediaAsset
     func localURL(for asset: MediaAsset) async -> URL?
     func thumbnail(for asset: MediaAsset) async -> NSImage?
-    func evictCacheIfNeeded()
+    // R2-9: evictCacheIfNeeded 死代码已删除，真正占用管理由按年清理承担
     func removeLocalFiles(for asset: MediaAsset) throws
 }
 
@@ -243,9 +243,7 @@ final class LocalMediaStore: MediaStoreProtocol {
         try database.mediaAssetDAO.clearLocalFiles(id: asset.id)
     }
 
-    func evictCacheIfNeeded() {
-        // 由 P3-7 的 per-year 清理替代，此处保留作为全局阈值守卫
-    }
+    // R2-9: evictCacheIfNeeded() 空壳已删除（零调用，真正占用管理由按年清理承担）
 
     // MARK: - 磁盘用量
 
