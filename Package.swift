@@ -32,7 +32,16 @@ let package = Package(
         .testTarget(
             name: "WuyanTests",
             dependencies: ["Wuyan"],
-            path: "WuyanTests"
+            path: "WuyanTests",
+            swiftSettings: [
+                .unsafeFlags(["-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"])
+            ],
+            linkerSettings: [
+                .linkedFramework("Testing"),
+                .unsafeFlags(["-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"])
+            ]
         )
     ]
 )

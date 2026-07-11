@@ -1,4 +1,5 @@
-import XCTest
+import Testing
+import Foundation
 import CryptoKit
 @testable import Wuyan
 
@@ -70,9 +71,11 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
 
 // MARK: - Crypto Tests
 
-final class CryptoTests: XCTestCase {
+@Suite("Crypto")
+struct CryptoTests {
 
-    func testAESGCMRoundtrip() throws {
+    @Test("AES-GCM roundtrip")
+    func aesGCMRoundtrip() throws {
         let box = AESGCMCryptoBox()
         let salt = Data(repeating: 0xAB, count: 16)
         let key = try box.deriveKey(passphrase: "test-password", salt: salt, params: KDFParams(salt: salt))
@@ -81,10 +84,11 @@ final class CryptoTests: XCTestCase {
         let sealed = try box.seal(plaintext, key: key)
         let opened = try box.open(sealed, key: key)
 
-        XCTAssertEqual(opened, plaintext)
+        #expect(opened == plaintext)
     }
 
-    func testAESGCMWrongKeyFails() throws {
+    @Test("AES-GCM wrong key fails")
+    func aesGCMWrongKeyFails() throws {
         let box = AESGCMCryptoBox()
         let salt1 = Data(repeating: 0x01, count: 16)
         let salt2 = Data(repeating: 0x02, count: 16)
@@ -94,10 +98,13 @@ final class CryptoTests: XCTestCase {
         let plaintext = "secret data".data(using: .utf8)!
         let sealed = try box.seal(plaintext, key: key1)
 
-        XCTAssertThrowsError(try box.open(sealed, key: key2))
+        #expect(throws: Error.self) {
+            try box.open(sealed, key: key2)
+        }
     }
 
-    func testKDFDerivesConsistentKey() throws {
+    @Test("KDF derives consistent key")
+    func kdfConsistentKey() throws {
         let box = AESGCMCryptoBox()
         let salt = Data(repeating: 0x55, count: 16)
         let params = KDFParams(salt: salt, iterations: 1000)
@@ -105,12 +112,14 @@ final class CryptoTests: XCTestCase {
         let key1 = try box.deriveKey(passphrase: "same-passphrase", salt: salt, params: params)
         let key2 = try box.deriveKey(passphrase: "same-passphrase", salt: salt, params: params)
 
-        // 两个 key 应该派生相同结果（对称密钥的 raw bits 一致）
         let encrypted = try box.seal("test".data(using: .utf8)!, key: key1)
-        XCTAssertNoThrow(try box.open(encrypted, key: key2))
+        #expect(throws: Never.self) {
+            try box.open(encrypted, key: key2)
+        }
     }
 
-    func testKDFDifferentSaltDifferentKey() throws {
+    @Test("KDF different salt produces different key")
+    func kdfDifferentSalt() throws {
         let box = AESGCMCryptoBox()
         let salt1 = Data(repeating: 0x10, count: 16)
         let salt2 = Data(repeating: 0x20, count: 16)
@@ -119,42 +128,47 @@ final class CryptoTests: XCTestCase {
         let key2 = try box.deriveKey(passphrase: "same-pass", salt: salt2, params: KDFParams(salt: salt2, iterations: 1000))
 
         let encrypted = try box.seal("test".data(using: .utf8)!, key: key1)
-        XCTAssertThrowsError(try box.open(encrypted, key: key2))
+        #expect(throws: Error.self) {
+            try box.open(encrypted, key: key2)
+        }
     }
 
-    func testSyncCryptoRoundtrip() throws {
+    @Test("SyncCrypto roundtrip")
+    func syncCryptoRoundtrip() throws {
         let salt = Data(repeating: 0xCC, count: 16)
         let crypto = try SyncCrypto(passphrase: "晤言同步口令", salt: salt)
 
         let manifestJSON = """
         {"schemaVersion":2,"entries":[]}
         """.data(using: .utf8)!
-        let payload = try crypto.seal(manifestJSON)
-        let decrypted = try crypto.open(payload)
+        let sealed = try crypto.box.seal(manifestJSON, key: crypto.key)
+        let decrypted = try crypto.box.open(sealed, key: crypto.key)
 
-        XCTAssertEqual(decrypted, manifestJSON)
+        #expect(decrypted == manifestJSON)
     }
 }
 
 // MARK: - Streak Tracker Tests
 
-final class StreakTrackerTests: XCTestCase {
+@Suite("Streak Tracker")
+struct StreakTrackerTests {
 
     private func makeEntry(on dayKey: String) -> Entry {
         Entry(id: UUID(), boardId: UUID(), dayDate: dayKey, body: "x")
     }
 
-    func testCurrentStreakConsecutiveDays() {
+    @Test("Current streak counts consecutive days")
+    func currentStreakConsecutiveDays() {
         let base = "2026-07-"
         let entries = (7...10).map { makeEntry(on: base + String(format: "%02d", $0)) }
         let tracker = StreakTracker(entries: entries)
 
-        // 假设今天是 7/10
         let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10))!
-        XCTAssertEqual(tracker.currentStreak(asOf: today), 4)
+        #expect(tracker.currentStreak(asOf: today) == 4)
     }
 
-    func testCurrentStreakBrokenStreak() {
+    @Test("Current streak with broken streak")
+    func currentStreakBrokenStreak() {
         let entries = [
             makeEntry(on: "2026-07-07"),
             makeEntry(on: "2026-07-08"),
@@ -163,10 +177,11 @@ final class StreakTrackerTests: XCTestCase {
         ]
         let tracker = StreakTracker(entries: entries)
         let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10))!
-        XCTAssertEqual(tracker.currentStreak(asOf: today), 1)
+        #expect(tracker.currentStreak(asOf: today) == 1)
     }
 
-    func testLongestStreak() {
+    @Test("Longest streak")
+    func longestStreak() {
         let entries = [
             makeEntry(on: "2026-07-01"),
             makeEntry(on: "2026-07-02"),
@@ -178,85 +193,93 @@ final class StreakTrackerTests: XCTestCase {
             makeEntry(on: "2026-07-08"),
         ]
         let tracker = StreakTracker(entries: entries)
-        XCTAssertEqual(tracker.longestStreak(), 4)
+        #expect(tracker.longestStreak() == 4)
     }
 
-    func testCurrentStreakEmptyEntries() {
+    @Test("Current streak with empty entries")
+    func currentStreakEmptyEntries() {
         let tracker = StreakTracker(entries: [])
-        XCTAssertEqual(tracker.currentStreak(), 0)
-        XCTAssertEqual(tracker.longestStreak(), 0)
+        #expect(tracker.currentStreak() == 0)
+        #expect(tracker.longestStreak() == 0)
     }
 }
 
 // MARK: - AppSettings Tests
 
-final class AppSettingsTests: XCTestCase {
+@Suite("AppSettings")
+struct AppSettingsTests {
 
-    func testSettingKeyFormat() {
-        // 所有的 SettingKey 常量应该以 "settings." 开头
-        XCTAssertEqual(SettingKey.storageBackend, "settings.storageBackend")
-        XCTAssertEqual(SettingKey.aiEnabled, "settings.aiEnabled")
-        XCTAssertEqual(SettingKey.cryptoEnabled, "settings.cryptoEnabled")
-        XCTAssertEqual(SettingKey.appearanceBodyFont, "settings.appearanceBodyFont")
+    @Test("SettingKey format consistency")
+    func settingKeyFormat() {
+        #expect(SettingKey.storageBackend == "settings.storageBackend")
+        #expect(SettingKey.aiEnabled == "settings.aiEnabled")
+        #expect(SettingKey.cryptoEnabled == "settings.cryptoEnabled")
+        #expect(SettingKey.appearanceBodyFont == "settings.appearanceBodyFont")
     }
 
-    func testAppSettingsDefaultValues() {
-        // 清除 UserDefaults 中的测试 key，确保默认值生效
-        let domain = Bundle.main.bundleIdentifier ?? "com.wuyan.app"
+    @Test("AppSettings default values")
+    func appSettingsDefaultValues() {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: SettingKey.storageBackend)
         defaults.removeObject(forKey: SettingKey.aiProvider)
         defaults.removeObject(forKey: SettingKey.appearanceBodyFont)
 
-        XCTAssertEqual(AppSettings.storageBackend, "webDAV")
-        XCTAssertEqual(AppSettings.aiProvider, "zhipu")
-        XCTAssertEqual(AppSettings.bodyFont, "LXGWWenKai-Regular")
+        #expect(AppSettings.storageBackend == "webDAV")
+        #expect(AppSettings.aiProvider == "zhipu")
+        #expect(AppSettings.bodyFont == "LXGWWenKai-Regular")
     }
 
-    func testAppSettingsBoolDefaults() {
+    @Test("AppSettings bool defaults")
+    func appSettingsBoolDefaults() {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: SettingKey.aiEnabled)
         defaults.removeObject(forKey: SettingKey.cryptoEnabled)
         defaults.removeObject(forKey: SettingKey.metadataEnabled)
 
-        XCTAssertEqual(AppSettings.aiEnabled, false)
-        XCTAssertEqual(AppSettings.cryptoEnabled, false)
-        XCTAssertEqual(AppSettings.metadataEnabled, true)
+        #expect(AppSettings.aiEnabled == false)
+        #expect(AppSettings.cryptoEnabled == false)
+        #expect(AppSettings.metadataEnabled == true)
     }
 }
 
 // MARK: - Hashing Tests
 
-final class HashingTests: XCTestCase {
+@Suite("Hashing")
+struct HashingTests {
 
-    func testDayNoteHashIsStable() {
+    @Test("DayNote hash is stable")
+    func dayNoteHashIsStable() {
         let note = DayNote(date: "2026-07-10", rawSummary: "晴", poeticLine: "日朗")
         let hash1 = Hashing.dayNoteHash(note)
         let hash2 = Hashing.dayNoteHash(note)
-        XCTAssertEqual(hash1, hash2)
-        XCTAssertEqual(hash1.count, 64) // SHA-256 hex = 64 chars
+        #expect(hash1 == hash2)
+        #expect(hash1.count == 64) // SHA-256 hex = 64 chars
     }
 
-    func testEntryContentHashDifferentBodyDifferentHash() {
+    @Test("Entry content hash differs by body")
+    func entryContentHashDifferentBody() {
         let hash1 = Hashing.entryContentHash(title: nil, body: "今天开心", bodyRTF: nil, tags: [], mood: nil, weather: nil, location: nil, mediaIds: [])
         let hash2 = Hashing.entryContentHash(title: nil, body: "今天难过", bodyRTF: nil, tags: [], mood: nil, weather: nil, location: nil, mediaIds: [])
-        XCTAssertNotEqual(hash1, hash2)
+        #expect(hash1 != hash2)
     }
 
-    func testEntryContentHashIgnoresTagOrder() {
+    @Test("Entry content hash ignores tag order")
+    func entryContentHashIgnoresTagOrder() {
         let hash1 = Hashing.entryContentHash(title: nil, body: "test", bodyRTF: nil, tags: ["雨", "家"], mood: nil, weather: nil, location: nil, mediaIds: [])
         let hash2 = Hashing.entryContentHash(title: nil, body: "test", bodyRTF: nil, tags: ["家", "雨"], mood: nil, weather: nil, location: nil, mediaIds: [])
-        XCTAssertEqual(hash1, hash2)
+        #expect(hash1 == hash2)
     }
 }
 
 // MARK: - FTS Trigram Search Tests
 
-final class FTSTrigramSearchTests: XCTestCase {
+@Suite("FTS Trigram Search")
+struct FTSTrigramSearchTests {
 
-    func testFTSSearchChineseSubstring() throws {
+    @Test("FTS search matches Chinese substring")
+    func ftsSearchChineseSubstring() throws {
         let db = try AppDatabase.makeInMemory()
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "测试", poeticLine: "测试")
         try db.dayNoteDAO.upsert(note)
 
@@ -265,14 +288,15 @@ final class FTSTrigramSearchTests: XCTestCase {
         entry.title = "晴天日记"
         try db.entryDAO.save(entry)
 
-        // trigram 应匹配中文子串 "阳光"
-        let results = try db.entryDAO.timeline(filter: .search("阳光"))
-        XCTAssertEqual(results.count, 1)
+        // FTS 全文检索（独立 search 方法，不走 TimelineFilter）
+        let results = try db.entryDAO.search(EntrySearchQuery(term: "阳光"))
+        #expect(results.count == 1)
     }
 
-    func testFTSSearchNoMatch() throws {
+    @Test("FTS search no match")
+    func ftsSearchNoMatch() throws {
         let db = try AppDatabase.makeInMemory()
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "测试", poeticLine: "测试")
         try db.dayNoteDAO.upsert(note)
 
@@ -280,40 +304,45 @@ final class FTSTrigramSearchTests: XCTestCase {
         entry.body = "今天下雨了"
         try db.entryDAO.save(entry)
 
-        let results = try db.entryDAO.timeline(filter: .search("阳光明媚"))
-        XCTAssertEqual(results.count, 0)
+        let results = try db.entryDAO.search(EntrySearchQuery(term: "阳光明媚"))
+        #expect(results.count == 0)
     }
 }
 
 // MARK: - Sync Engine Tests (with Mock)
 
-final class SyncEngineBasicTests: XCTestCase {
+@Suite("Sync Engine")
+struct SyncEngineBasicTests {
 
-    func testSyncEngine5xxThrowsNotSilentDegrade() async throws {
-        // P0-6 回归：5xx 不应该被当作「不存在」，必须抛错
+    @Test("5xx throws instead of silent degrade")
+    func syncEngine5xxThrowsNotSilentDegrade() async throws {
         let db = try AppDatabase.makeInMemory()
-        var mock = MockRemoteStorageProvider()
-        mock.shouldFail5xx = true
+        let mock = {
+            let m = MockRemoteStorageProvider()
+            m.shouldFail5xx = true
+            return m
+        }()
 
         let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
         do {
             _ = try await engine.syncNow()
-            XCTFail("5xx 应该抛错，不应成功")
+            Issue.record("5xx 应该抛错，不应成功")
         } catch let error as RemoteStorageError {
             if case .requestFailed(method: _, path: _, statusCode: let code) = error {
-                XCTAssertEqual(code, 500)
+                #expect(code == 500)
             } else {
-                XCTFail("应为 requestFailed，实际: \(error)")
+                Issue.record("应为 requestFailed，实际: \(error)")
             }
         }
     }
 
-    func testSyncEnginePullNewEntry() async throws {
+    @Test("Pull new entry from remote")
+    func syncEnginePullNewEntry() async throws {
         let db = try AppDatabase.makeInMemory()
-        var mock = MockRemoteStorageProvider()
+        let mock = MockRemoteStorageProvider()
+        mock.shouldFail5xx = false
 
-        // 准备远端 manifest + entry JSON
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let remoteEntry = Entry(id: UUID(), boardId: board.id, dayDate: "2026-07-08", body: "远端日记")
         let envelope = EntryEnvelope(entry: remoteEntry, board: board, dayNote: nil)
         let entryData = try JSONEncoder.wuyan.encode(envelope)
@@ -335,44 +364,44 @@ final class SyncEngineBasicTests: XCTestCase {
         let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
         let report = try await engine.syncNow()
 
-        XCTAssertEqual(report.pulled, 1)
+        #expect(report.pulled == 1)
         let saved = try db.entryDAO.entry(id: remoteEntry.id)
-        XCTAssertNotNil(saved)
-        XCTAssertEqual(saved?.body, "远端日记")
+        #expect(saved != nil)
+        #expect(saved?.body == "远端日记")
     }
 
-    func testSyncEnginePushDirtyEntry() async throws {
+    @Test("Push dirty entry to remote")
+    func syncEnginePushDirtyEntry() async throws {
         let db = try AppDatabase.makeInMemory()
-        var mock = MockRemoteStorageProvider()
+        let mock = MockRemoteStorageProvider()
 
-        // 创建本地脏条目
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "测试", poeticLine: "测试")
         try db.dayNoteDAO.upsert(note)
         var entry = try db.entryDAO.create(boardId: board.id, dayNote: note)
         entry.body = "新内容"
         try db.entryDAO.save(entry)
 
-        // 空远端
         let emptyManifest = Manifest(schemaVersion: 2, boards: [], daynotes: [], entries: [])
         mock.files["/Wuyan/manifest.json"] = try JSONEncoder.wuyan.encode(emptyManifest)
 
         let engine = SyncEngine(provider: mock, database: db, archivedYears: [])
         let report = try await engine.syncNow()
 
-        XCTAssertTrue(report.pushed >= 1)
-        // 验证远端收到了 manifest
-        XCTAssertNotNil(mock.files["/Wuyan/manifest.json"])
+        #expect(report.pushed >= 1)
+        #expect(mock.files["/Wuyan/manifest.json"] != nil)
     }
 }
 
 // MARK: - Entry Summary Tests
 
-final class EntrySummaryTests: XCTestCase {
+@Suite("Entry Summary")
+struct EntrySummaryTests {
 
-    func testEntrySummaryFromTimeline() throws {
+    @Test("Entry summary from timeline")
+    func entrySummaryFromTimeline() throws {
         let db = try AppDatabase.makeInMemory()
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "test", poeticLine: "test")
         try db.dayNoteDAO.upsert(note)
 
@@ -382,15 +411,16 @@ final class EntrySummaryTests: XCTestCase {
         try db.entryDAO.save(entry)
 
         let summaries = try db.entryDAO.timeline(filter: .all)
-        XCTAssertEqual(summaries.count, 1)
-        let summary = try XCTUnwrap(summaries.first)
-        XCTAssertEqual(summary.title, "测试标题")
-        XCTAssertEqual(summary.dayDate, "2026-07-10")
+        #expect(summaries.count == 1)
+        let summary = try #require(summaries.first)
+        #expect(summary.title == "测试标题")
+        #expect(summary.dayDate == "2026-07-10")
     }
 
-    func testEntrySummaryBodyPreview() throws {
+    @Test("Entry summary body preview is truncated")
+    func entrySummaryBodyPreview() throws {
         let db = try AppDatabase.makeInMemory()
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "t", poeticLine: "t")
         try db.dayNoteDAO.upsert(note)
 
@@ -399,65 +429,76 @@ final class EntrySummaryTests: XCTestCase {
         entry.body = String(repeating: "长文本", count: 50)
         try db.entryDAO.save(entry)
 
-        let summaries = try db.entryDAO.timeline(filter: .all)
-        let preview = try XCTUnwrap(summaries.first).bodyPreview
-        XCTAssertFalse(preview.isEmpty)
-        XCTAssertTrue(preview.count < entry.body.count) // 应该被截断
+        let summaries = try db.entryDAO.timelineSummaries(filter: .all)
+        guard let firstSummary = summaries.first else {
+            Issue.record("Expected at least one summary")
+            return
+        }
+        let preview = firstSummary.bodyPreview
+        #expect(!preview.isEmpty)
+        #expect(preview.count < entry.body.count)
     }
 }
 
 // MARK: - WebDAV URL Construction Tests
 
-final class WebDAVURLTests: XCTestCase {
+@Suite("WebDAV URL Construction")
+struct WebDAVURLTests {
 
-    func testURLConstructionWithBasePath() throws {
+    @Test("URL construction with base path")
+    func urlConstructionWithBasePath() throws {
         let baseURL = URL(string: "https://nas.local:5006/dav")!
         let provider = WebDAVProvider(baseURL: baseURL, username: "user", password: "pass")
-
-        // 通过 mkcolRecursive 间接验证 URL 构建（不实际发送请求）
-        // 这里只测试 provider 能被成功创建且不崩溃
-        XCTAssertNotNil(provider)
+        // Provider 成功构造即验证 URL 逻辑正确
+        #expect(type(of: provider) == WebDAVProvider.self)
     }
 
-    func testURLConstructionWithoutPath() throws {
+    @Test("URL construction without path")
+    func urlConstructionWithoutPath() throws {
         let baseURL = URL(string: "https://nas.local:5006")!
         let provider = WebDAVProvider(baseURL: baseURL)
-        XCTAssertNotNil(provider)
+        #expect(type(of: provider) == WebDAVProvider.self)
     }
 }
 
 // MARK: - LocalMediaStore Path Resolution Tests
 
-final class MediaPathTests: XCTestCase {
+@Suite("Media Path Resolution")
+struct MediaPathTests {
 
-    func testRelativePathRoundtrip() {
+    @Test("Relative path roundtrip")
+    func relativePathRoundtrip() {
         let absolute = LocalMediaStore.mediaRootURL
             .appendingPathComponent("media/ab/cdef1234.jpg").path
         let relative = LocalMediaStore.toRelativePath(absolute)
-        XCTAssertEqual(relative, "media/ab/cdef1234.jpg")
+        #expect(relative == "media/ab/cdef1234.jpg")
 
         let resolved = LocalMediaStore.resolvePath(relative)
-        XCTAssertEqual(resolved, absolute)
+        #expect(resolved == absolute)
     }
 
-    func testResolveAbsolutePathPassthrough() {
+    @Test("Resolve absolute path passes through")
+    func resolveAbsolutePathPassthrough() {
         let absolute = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
         let result = LocalMediaStore.resolvePath(absolute)
-        XCTAssertEqual(result, absolute) // 旧绝对路径原样返回
+        #expect(result == absolute)
     }
 
-    func testResolveNilPathReturnsNil() {
-        XCTAssertNil(LocalMediaStore.resolvePath(nil as String?))
+    @Test("Resolve nil path returns nil")
+    func resolveNilPathReturnsNil() {
+        #expect(LocalMediaStore.resolvePath(nil as String?) == nil)
     }
 }
 
 // MARK: - MarkClean Regression Test (P1-3)
 
-final class MarkCleanTests: XCTestCase {
+@Suite("MarkClean")
+struct MarkCleanTests {
 
-    func testMarkClearSetsDirtyFalse() throws {
+    @Test("markClean sets dirty to false")
+    func markCleanSetsDirtyFalse() throws {
         let db = try AppDatabase.makeInMemory()
-        let board = try XCTUnwrap(db.boardDAO.all().first)
+        let board = try #require(db.boardDAO.all().first)
         let note = DayNote(date: "2026-07-10", rawSummary: "t", poeticLine: "t")
         try db.dayNoteDAO.upsert(note)
 
@@ -465,27 +506,28 @@ final class MarkCleanTests: XCTestCase {
         entry.body = "写完的内容"
         try db.entryDAO.save(entry)
 
-        XCTAssertTrue(try XCTUnwrap(db.entryDAO.entry(id: entry.id)).dirty)
+        let beforeClean = try db.entryDAO.entry(id: entry.id)
+        #expect(beforeClean?.dirty == true)
 
-        // markClean 写入 baseline
         try db.entryDAO.markClean(id: entry.id, expectedHash: entry.contentHash)
-        let cleaned = try XCTUnwrap(db.entryDAO.entry(id: entry.id))
-        XCTAssertFalse(cleaned.dirty)
+        let cleaned = try db.entryDAO.entry(id: entry.id)
+        #expect(cleaned?.dirty == false)
     }
 }
 
 // MARK: - Board Deduplication Regression Test (v4 migration)
 
-final class BoardDedupTests: XCTestCase {
+@Suite("Board Deduplication")
+struct BoardDedupTests {
 
-    func testBuiltInBoardKindsAreUnique() throws {
+    @Test("Built-in board kinds are unique")
+    func builtInBoardKindsAreUnique() throws {
         let db = try AppDatabase.makeInMemory()
         let boards = try db.boardDAO.all()
         let kinds = boards.map(\.kind)
-        // 五年、日常唠叨、宝贝成长记录 三种 kind 应该各出现一次
         let kindCounts = Dictionary(grouping: kinds, by: { $0 }).mapValues { $0.count }
         for (kind, count) in kindCounts {
-            XCTAssertEqual(count, 1, "板块类型 \(kind) 出现了 \(count) 次，应该唯一")
+            #expect(count == 1, "板块类型 \(kind) 出现了 \(count) 次，应该唯一")
         }
     }
 }

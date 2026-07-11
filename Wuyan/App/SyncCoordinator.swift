@@ -12,7 +12,23 @@ final class SyncCoordinator: ObservableObject {
     @Published var syncMessage: String?
     @Published var syncProgress: SyncProgress?
     @Published var syncConflicts: [UUID] = []
-    @Published var errorMessage: String?
+    /// 同步内部错误状态。外部应通过 AppState.errorMessage 读取（已通过 onError 转发）。
+    @Published private(set) var errorMessage: String?
+
+    /// R0-1: 同步错误回调。由 AppState 注册，将错误统一汇聚到 AppState.errorMessage，
+    /// 确保 RootView 的全局 alert 能弹出同步失败信息。
+    var onError: (@MainActor (String) -> Void)?
+
+    /// 设置同步错误信息，同时通过 onError 回调通知 AppState。
+    private func setSyncError(_ message: String) {
+        errorMessage = message
+        onError?(message)
+    }
+
+    /// 清空同步错误（开始新一轮同步/归档/下载时调用）。
+    private func clearSyncError() {
+        clearSyncError()
+    }
 
     // MARK: - 自动同步
 
@@ -71,7 +87,7 @@ final class SyncCoordinator: ObservableObject {
         syncMessage = "同步中…"
         syncProgress = SyncProgress(phase: "准备同步", completedUnitCount: 0, totalUnitCount: 1)
         syncConflicts = []
-        errorMessage = nil
+        clearSyncError()
 
         let provider: any RemoteStorageProvider
         do {
@@ -79,7 +95,7 @@ final class SyncCoordinator: ObservableObject {
         } catch {
             syncMessage = nil
             syncProgress = nil
-            errorMessage = error.localizedDescription
+            setSyncError(error.localizedDescription)
             return
         }
         if AppSettings.cryptoEnabled {
@@ -87,7 +103,7 @@ final class SyncCoordinator: ObservableObject {
             if passphrase.isEmpty {
                 syncMessage = nil
                 syncProgress = nil
-                errorMessage = "请先在设置中填写同步加密口令。"
+                setSyncError("请先在设置中填写同步加密口令。")
                 return
             }
         }
@@ -118,7 +134,7 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     self.syncMessage = nil
                     self.syncProgress = nil
-                    self.errorMessage = error.localizedDescription
+                    self.setSyncError(error.localizedDescription)
                     WuyanLog.sync.error("同步失败：\(error.localizedDescription)")
                 }
             }
@@ -129,7 +145,7 @@ final class SyncCoordinator: ObservableObject {
         guard syncProgress == nil else { return }
         syncMessage = "\(year) 年归档中…"
         syncProgress = SyncProgress(phase: "\(year) 年归档准备中", completedUnitCount: 0, totalUnitCount: 1)
-        errorMessage = nil
+        clearSyncError()
 
         let provider: any RemoteStorageProvider
         do {
@@ -137,7 +153,7 @@ final class SyncCoordinator: ObservableObject {
         } catch {
             syncMessage = nil
             syncProgress = nil
-            errorMessage = error.localizedDescription
+            setSyncError(error.localizedDescription)
             return
         }
         let database = db
@@ -197,7 +213,7 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     self.syncMessage = nil
                     self.syncProgress = nil
-                    self.errorMessage = error.localizedDescription
+                    self.setSyncError(error.localizedDescription)
                 }
             }
         }
@@ -207,7 +223,7 @@ final class SyncCoordinator: ObservableObject {
         guard syncProgress == nil else { return }
         syncMessage = "\(year) 年下载中…"
         syncProgress = SyncProgress(phase: "\(year) 年下载准备中", completedUnitCount: 0, totalUnitCount: 1)
-        errorMessage = nil
+        clearSyncError()
 
         let provider: any RemoteStorageProvider
         do {
@@ -215,7 +231,7 @@ final class SyncCoordinator: ObservableObject {
         } catch {
             syncMessage = nil
             syncProgress = nil
-            errorMessage = error.localizedDescription
+            setSyncError(error.localizedDescription)
             return
         }
         let database = db
@@ -266,7 +282,7 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     self.syncMessage = nil
                     self.syncProgress = nil
-                    self.errorMessage = error.localizedDescription
+                    self.setSyncError(error.localizedDescription)
                 }
             }
         }

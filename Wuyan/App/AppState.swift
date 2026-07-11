@@ -41,6 +41,7 @@ final class AppState: ObservableObject {
     @Published var selectedEntryId: UUID?
     @Published var isShowingRitual = false
     @Published var boardChooserDay: String?
+    /// 全局错误信息：同步错误和其他运行时错误统一汇聚于此，由 RootView 弹出 alert。
     @Published var errorMessage: String?
     /// 全局云端 AI 信任标记：同一会话内确认一次后，AIAssistantView 和 RitualView 共享。
     @Published var trustCloudForSession = false
@@ -51,6 +52,9 @@ final class AppState: ObservableObject {
     var syncMessage: String? { syncCoordinator.syncMessage }
     var syncProgress: SyncProgress? { syncCoordinator.syncProgress }
     var syncConflicts: [UUID] { syncCoordinator.syncConflicts }
+
+    /// 订阅 SyncCoordinator 的 objectWillChange，使其 @Published 变化能触发本对象 UI 刷新。
+    private var syncCancellable: AnyCancellable?
 
     private static let archivedYearsKey = "archive.years"
 
@@ -69,6 +73,18 @@ final class AppState: ObservableObject {
         self.aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
         let stored = UserDefaults.standard.array(forKey: Self.archivedYearsKey) as? [Int] ?? []
         self.archivedYears = stored.sorted(by: >)
+
+        // R0-1: 将 SyncCoordinator 的 objectWillChange 转发到 AppState，
+        // 使 SettingsView/SidebarView 通过 appState.syncProgress 等计算属性读取时能刷新。
+        self.syncCancellable = syncCoordinator.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+        // R0-1: 将 SyncCoordinator 的错误统一汇聚到 AppState.errorMessage，供 RootView alert 展示。
+        syncCoordinator.onError = { [weak self] message in
+            self?.errorMessage = message
+        }
     }
 
     private func setArchivedYears(_ years: Set<Int>) {
