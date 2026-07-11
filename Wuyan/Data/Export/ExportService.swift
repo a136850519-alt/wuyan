@@ -21,31 +21,33 @@ final class ExportService {
             let filename = "\(entry.dayDate)-\(entry.id.uuidString).md"
             let url = directory.appendingPathComponent(filename)
             let assets = (try? mediaDAO?.allAssets(for: entry.mediaIds)) ?? []
+            // R0-9: 先计算所有 safeName 映射，确保 Markdown 链接与实际复制文件名一致
+            let assetSafeNames: [UUID: String] = Dictionary(uniqueKeysWithValues: assets.compactMap { asset -> (UUID, String)? in
+                guard asset.localPath != nil else { return nil }
+                let prefix = String(asset.sha256.prefix(8))
+                let candidate = "\(prefix)-\(asset.filename)"
+                let safeName: String
+                if usedFilenames.insert(candidate).inserted {
+                    safeName = candidate
+                } else {
+                    // 极端情况：同 sha256 同名（不可能但防御性编码）
+                    safeName = "\(prefix)-\(asset.id.uuidString.prefix(8))-\(asset.filename)"
+                    usedFilenames.insert(safeName)
+                }
+                return (asset.id, safeName)
+            })
             for asset in assets {
-                if let localPath = asset.localPath {
+                if let localPath = asset.localPath, let safeName = assetSafeNames[asset.id] {
                     let absolutePath = LocalMediaStore.resolvePath(localPath)
-                    // 用 sha256 前8位前缀防冲突：IMG_0001.jpg → a1b2c3d4-IMG_0001.jpg
-                    let safeName: String
-                    let prefix = String(asset.sha256.prefix(8))
-                    let candidate = "\(prefix)-\(asset.filename)"
-                    if usedFilenames.insert(candidate).inserted {
-                        safeName = candidate
-                    } else {
-                        // 极端情况：同 sha256 同名（不可能但防御性编码）
-                        safeName = "\(prefix)-\(asset.id.uuidString.prefix(8))-\(asset.filename)"
-                        usedFilenames.insert(safeName)
-                    }
                     let destination = mediaDirectory.appendingPathComponent(safeName)
                     if !FileManager.default.fileExists(atPath: destination.path) {
                         try? FileManager.default.copyItem(at: URL(fileURLWithPath: absolutePath), to: destination)
                     }
                 }
             }
-            // Markdown 链接也需要同步使用安全文件名
+            // Markdown 链接使用同一 safeName 映射
             let mediaLinks = assets.compactMap { asset -> String? in
-                guard asset.localPath != nil else { return nil }
-                let prefix = String(asset.sha256.prefix(8))
-                let safeName = "\(prefix)-\(asset.filename)"
+                guard asset.localPath != nil, let safeName = assetSafeNames[asset.id] else { return nil }
                 return "![\(asset.filename)](media/\(safeName))"
             }.joined(separator: "\n")
             let frontmatter = """
