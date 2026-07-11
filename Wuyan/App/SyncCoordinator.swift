@@ -74,10 +74,18 @@ final class SyncCoordinator: ObservableObject {
     }
 
     /// 仅在已配置存储后端时执行自动同步
+    /// R1-5: 用轻量 UserDefaults 检查替代 makeRemoteStorageProvider() 构建，
+    /// 避免每次自动同步探测都触发 Keychain 读取。
     private func autoSyncIfConfigured() {
-        // 如果没配置 WebDAV/S3，静默跳过
-        guard let _ = try? ProviderFactory.makeRemoteStorageProvider() else { return }
-        guard syncProgress == nil else { return } // 正在同步中，不重复触发
+        let backend = AppSettings.storageBackend
+        let configured: Bool
+        if backend == "s3" {
+            configured = !AppSettings.s3Endpoint.isEmpty && !AppSettings.s3AccessKey.isEmpty
+        } else {
+            configured = !AppSettings.webDAVBaseURL.isEmpty && !AppSettings.webDAVUsername.isEmpty
+        }
+        guard configured else { return }
+        guard syncProgress == nil else { return }
         let archivedYears = UserDefaults.standard.array(forKey: "archive.years") as? [Int] ?? []
         syncNow(archivedYears: Set(archivedYears))
     }
