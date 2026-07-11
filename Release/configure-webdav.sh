@@ -91,8 +91,10 @@ defaults write "$APP_BUNDLE_ID" "settings.webdav.baseURL" -string "$WEB_DAV_URL"
 defaults write "$APP_BUNDLE_ID" "settings.webdav.username" -string "$WEB_DAV_USERNAME"
 
 # 将密码写入 Keychain（不再写 defaults，避免明文泄露）
-security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -U 2>/dev/null \
-  || security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD"
+# R0-10: 添加 -A 参数允许应用进程访问。CLI 创建的 Keychain 项默认无 ACL，
+# 导致沙盒应用运行时无法读取。如需更严格控制可用 -T 指定应用路径。
+security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -A -U 2>/dev/null \
+  || security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -A
 
 if [[ "$MARK_ONBOARDING_DONE" == "true" ]]; then
   defaults write "$APP_BUNDLE_ID" "onboarding.completed" -bool true

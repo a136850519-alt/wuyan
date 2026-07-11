@@ -107,8 +107,10 @@ defaults write "$APP_BUNDLE_ID" "settings.s3.accessKey" -string "$S3_ACCESS_KEY"
 defaults write "$APP_BUNDLE_ID" "settings.s3.pathStyle" -bool "$S3_PATH_STYLE"
 
 # 将 Secret Key 写入 Keychain（不再写 defaults，避免明文泄露）
-security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -U 2>/dev/null \
-  || security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY"
+# R0-10: 添加 -A 参数允许应用进程访问。CLI 创建的 Keychain 项默认无 ACL，
+# 导致沙盒应用运行时无法读取。如需更严格控制可用 -T 指定应用路径。
+security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -A -U 2>/dev/null \
+  || security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -A
 
 echo "已写入晤言 S3 / MinIO 配置："
 echo "  Bundle ID: $APP_BUNDLE_ID"
