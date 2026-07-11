@@ -7,10 +7,8 @@ enum ProviderFactory {
     static func makeAIProvider() -> AIProvider? {
         let provider = AppSettings.aiProvider
         if provider == "zhipu" {
-            let endpoint = urlFromDefaults(
-                key: SettingKey.zhipuEndpoint,
-                fallback: AppSettings.zhipuEndpoint
-            )
+            // R2-7: 直接用 AppSettings（已含 trim），URL 化在此完成
+            let endpoint = URL(string: AppSettings.zhipuEndpoint) ?? URL(string: "https://open.bigmodel.cn/api/paas/v4")!
             return ZhipuProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey),
                 model: AppSettings.zhipuModel,
@@ -18,10 +16,7 @@ enum ProviderFactory {
             )
         }
         if provider == "claude" {
-            let endpoint = urlFromDefaults(
-                key: SettingKey.claudeEndpoint,
-                fallback: AppSettings.claudeEndpoint
-            )
+            let endpoint = URL(string: AppSettings.claudeEndpoint) ?? URL(string: "https://api.anthropic.com/v1/messages")!
             return ClaudeProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey),
                 model: AppSettings.claudeModel,
@@ -99,11 +94,5 @@ enum ProviderFactory {
         }
         let digest = CryptoKit.SHA256.hash(data: Data(identity.utf8))
         return digest.compactMap { String(format: "%02x", $0) }.prefix(8).joined()
-    }
-
-    private static func urlFromDefaults(key: String, fallback: String) -> URL {
-        let raw = UserDefaults.standard.string(forKey: key)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return URL(string: raw?.isEmpty == false ? raw! : fallback) ?? URL(string: fallback)!
     }
 }

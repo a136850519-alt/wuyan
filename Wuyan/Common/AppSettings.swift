@@ -84,19 +84,24 @@ enum AppSettings {
         defaults.string(forKey: SettingKey.aiProvider) ?? "zhipu"
     }
     static var zhipuEndpoint: String {
-        defaults.string(forKey: SettingKey.zhipuEndpoint) ?? "https://open.bigmodel.cn/api/paas/v4"
+        // R2-7: trim 语义纳入访问器，替代 ProviderFactory.urlFromDefaults
+        (defaults.string(forKey: SettingKey.zhipuEndpoint) ?? "https://open.bigmodel.cn/api/paas/v4")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static var zhipuModel: String {
         defaults.string(forKey: SettingKey.zhipuModel) ?? "glm-5.2"
     }
     static var claudeEndpoint: String {
-        defaults.string(forKey: SettingKey.claudeEndpoint) ?? "https://api.anthropic.com/v1/messages"
+        // R2-7: trim 语义纳入访问器
+        (defaults.string(forKey: SettingKey.claudeEndpoint) ?? "https://api.anthropic.com/v1/messages")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static var claudeModel: String {
         defaults.string(forKey: SettingKey.claudeModel) ?? "claude-sonnet-5"
     }
     static var ollamaEndpoint: String {
-        defaults.string(forKey: SettingKey.ollamaEndpoint) ?? "http://localhost:11434"
+        (defaults.string(forKey: SettingKey.ollamaEndpoint) ?? "http://localhost:11434")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static var ollamaModel: String {
         defaults.string(forKey: SettingKey.ollamaModel) ?? "qwen2.5"
