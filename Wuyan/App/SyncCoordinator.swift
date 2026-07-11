@@ -19,6 +19,12 @@ final class SyncCoordinator: ObservableObject {
     /// 确保 RootView 的全局 alert 能弹出同步失败信息。
     var onError: (@MainActor (String) -> Void)?
 
+    /// R0-2: 归档完成回调。参数为归档年份，由 AppState 注册以更新 archivedYears。
+    var onArchiveComplete: (@MainActor (Int) -> Void)?
+
+    /// R0-2: 下载完成回调。参数为下载年份，由 AppState 注册以更新 archivedYears。
+    var onDownloadComplete: (@MainActor (Int) -> Void)?
+
     /// 设置同步错误信息，同时通过 onError 回调通知 AppState。
     private func setSyncError(_ message: String) {
         errorMessage = message
@@ -27,7 +33,7 @@ final class SyncCoordinator: ObservableObject {
 
     /// 清空同步错误（开始新一轮同步/归档/下载时调用）。
     private func clearSyncError() {
-        clearSyncError()
+        errorMessage = nil
     }
 
     // MARK: - 自动同步
@@ -208,6 +214,8 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     syncMessage = "\(year) 年归档完成：上传媒体 \(uploaded)，清理本地附件 \(removed)，已删除本地 \(yearEntries.count) 篇日记。"
                     syncProgress = nil
+                    // R0-2: 通知 AppState 将该年加入 archivedYears
+                    onArchiveComplete?(year)
                 }
             } catch {
                 await MainActor.run {
@@ -277,6 +285,8 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     syncMessage = "\(year) 年下载完成：本地附件 \(downloaded)。"
                     syncProgress = nil
+                    // R0-2: 通知 AppState 将该年从 archivedYears 移除
+                    onDownloadComplete?(year)
                 }
             } catch {
                 await MainActor.run {

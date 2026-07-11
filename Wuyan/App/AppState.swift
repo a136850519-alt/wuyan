@@ -85,9 +85,25 @@ final class AppState: ObservableObject {
         syncCoordinator.onError = { [weak self] message in
             self?.errorMessage = message
         }
+        // R0-2: 归档成功后将该年加入 archivedYears 并持久化
+        syncCoordinator.onArchiveComplete = { [weak self] year in
+            guard let self else { return }
+            var years = Set(self.archivedYears)
+            years.insert(year)
+            self.setArchivedYears(years)
+        }
+        // R0-2: 下载成功后将该年从 archivedYears 移除并持久化
+        syncCoordinator.onDownloadComplete = { [weak self] year in
+            guard let self else { return }
+            var years = Set(self.archivedYears)
+            years.remove(year)
+            self.setArchivedYears(years)
+        }
     }
 
-    private func setArchivedYears(_ years: Set<Int>) {
+    /// 更新 archivedYears 并持久化到 UserDefaults。
+    /// R0-2: 改为 internal 以便 SyncCoordinator 回调链路可达。
+    func setArchivedYears(_ years: Set<Int>) {
         let sorted = years.sorted(by: >)
         archivedYears = sorted
         UserDefaults.standard.set(sorted, forKey: Self.archivedYearsKey)
