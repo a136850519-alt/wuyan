@@ -28,6 +28,9 @@ actor SyncEngine {
     private var mediaCache: Set<String>?
     /// 后端指纹：用于区分不同的远端配置（避免切换 NAS/账号后旧水位线跳过拉取）
     private let backendFingerprint: String
+    /// R0-7: 明文→加密迁移标记。当 decodeRaw 检测到远端有明文数据时设置，
+    /// syncNow 完成后会自动用加密方式重新上传所有条目。
+    private var cryptoNeedsReEncrypt = false
 
     init(
         provider: RemoteStorageProvider,
@@ -119,6 +122,26 @@ actor SyncEngine {
             // 先裁剪陈旧墓碑，再据裁剪后的内容计算指纹，保证「无变化」时指纹稳定不抖动。
             manifest = pruneManifest(manifest)
             manifest.boards = try database.boardDAO.all()
+
+            // R0-7: 明文→加密迁移——如果拉取阶段检测到远端有明文数据，
+            // 用加密格式重新上传全部条目和日札，覆盖远端明文。
+            if cryptoNeedsReEncrypt {
+                progress.phase = "正在迁移远端明文→加密"
+                await self.report(progress)
+                let allEntries = try database.entryDAO.timeline(filter: .all)
+                let allDayNotes = try database.dayNoteDAO.all()
+                var migrationProgress = SyncProgress(
+                    phase: "明文→加密迁移",
+                    completedUnitCount: 0,
+                    totalUnitCount: max(1, allEntries.count + allDayNotes.count)
+                )
+                var migrationReport = SyncReport()
+                _ = try await pushDirtyEntries(allEntries, into: &manifest, report: &migrationReport, progress: &migrationProgress)
+                try await pushDayNotes(allDayNotes, into: &manifest, progress: &migrationProgress)
+                manifest.boards = try database.boardDAO.all()
+                WuyanLog.sync.info("明文→加密迁移完成，已重新上传 \(allEntries.count) 条目和 \(allDayNotes.count) 日札")
+            }
+
             let savedRevision = try await saveManifest(manifest)
             Self.storeLastRevision(savedRevision, forKey: revisionKey)
             progress.completedUnitCount += 1
@@ -566,18 +589,33 @@ actor SyncEngine {
 
     private func decodeRaw(_ data: Data) throws -> Data {
         guard let crypto else { return data }
-        // 加密模式下，数据必须是合法的 EncryptedPayload；解不出就报错，不允许静默降级为明文。
-        guard let payload = try? decoder.decode(EncryptedPayload.self, from: data),
-              let ciphertext = Data(base64Encoded: payload.ciphertextBase64)
-        else {
-            throw SyncError.decryptFailed(reason: "远端数据不是合法的加密格式，口令可能不正确或文件被篡改")
+        // 加密模式下，优先尝试解密 EncryptedPayload。
+        if let payload = try? decoder.decode(EncryptedPayload.self, from: data),
+           let ciphertext = Data(base64Encoded: payload.ciphertextBase64) {
+            do {
+                let key = try crypto.key(forSaltBase64: payload.saltBase64, iterations: payload.iterations)
+                return try crypto.box.open(ciphertext, key: key)
+            } catch {
+                throw SyncError.decryptFailed(reason: "解密失败：口令可能不正确（\(error.localizedDescription)）")
+            }
         }
-        do {
-            let key = try crypto.key(forSaltBase64: payload.saltBase64, iterations: payload.iterations)
-            return try crypto.box.open(ciphertext, key: key)
-        } catch {
-            throw SyncError.decryptFailed(reason: "解密失败：口令可能不正确（\(error.localizedDescription)）")
+        // R0-7: 明文→加密迁移宽容处理——如果数据看起来是合法 JSON（明文旧数据），
+        // 不直接报错，而是返回明文并设置迁移标记，供调用方后续用加密格式覆盖上传。
+        // 这样用户从明文切换到加密时不会因旧数据解密失败而阻塞同步。
+        if let _ = try? decoder.decode(Manifest.self, from: data),
+           data.count > 2 {
+            // 看起来是有效 JSON（Manifest 或 EntryEnvelope 等），按明文处理
+            WuyanLog.sync.info("检测到远端明文数据，将进行加密覆盖迁移")
+            cryptoNeedsReEncrypt = true
+            return data
         }
+        // 尝试作为裸 UTF-8 JSON 解析（非 EncryptedPayload 也非 Manifest 的条目/日札数据）
+        if let first = data.first, first == 0x7B || first == 0x5B {
+            WuyanLog.sync.info("检测到远端明文 JSON 数据，将进行加密覆盖迁移")
+            cryptoNeedsReEncrypt = true
+            return data
+        }
+        throw SyncError.decryptFailed(reason: "远端数据不是合法的加密格式，口令可能不正确或文件被篡改")
     }
 
     private func report(_ progress: SyncProgress) async {
