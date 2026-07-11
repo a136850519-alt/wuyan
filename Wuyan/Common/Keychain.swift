@@ -18,7 +18,9 @@ struct Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    func setString(_ value: String?, for account: String) {
+    /// R0-6: setString 现在返回是否成功，避免静默丢失凭据。
+    @discardableResult
+    func setString(_ value: String?, for account: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
@@ -32,14 +34,17 @@ struct Keychain {
             ]
             let status = SecItemCopyMatching(query as CFDictionary, nil)
             if status == errSecSuccess {
-                SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+                let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+                return updateStatus == errSecSuccess
             } else {
                 var item = query
                 attributes.forEach { item[$0.key] = $0.value }
-                SecItemAdd(item as CFDictionary, nil)
+                let addStatus = SecItemAdd(item as CFDictionary, nil)
+                return addStatus == errSecSuccess
             }
         } else {
             SecItemDelete(query as CFDictionary)
+            return true
         }
     }
 }

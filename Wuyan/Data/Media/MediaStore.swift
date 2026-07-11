@@ -281,7 +281,6 @@ final class LocalMediaStore: MediaStoreProtocol {
         let allMediaIds = yearEntries.flatMap(\.mediaIds)
         let allAssets = try database.mediaAssetDAO.allAssets(for: allMediaIds)
         let uploadedPaths = try database.mediaAssetDAO.uploadedPaths()
-        let calendar = Calendar.current
 
         var removed = 0
         for asset in allAssets {
