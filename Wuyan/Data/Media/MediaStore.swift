@@ -271,14 +271,44 @@ final class LocalMediaStore: MediaStoreProtocol {
         return sizes
     }
 
-    /// 清理指定年份的本地媒体文件（仅删除已同步到远端的）
-    func evictYearMedia(year: Int) throws -> Int {
-        let allAssets = try database.mediaAssetDAO.allAssets()
+    /// 清理指定年份的本地媒体文件（仅删除已同步到远端的）。
+    /// R0-4: 修复安全检查——不再仅凭 sha256 非空就删除，而是：
+    ///   1. 用条目的 dayDate（而非 capturedAt）判断年份归属
+    ///   2. 只删除已在 sync_uploaded 表中记录的资产，确保远端有备份
+    ///   3. 对未在 sync_uploaded 中的资产查询远端是否存在
+    func evictYearMedia(year: Int) async throws -> Int {
+        let yearEntries = try database.entryDAO.timeline(filter: .year(year))
+        let allMediaIds = yearEntries.flatMap(\.mediaIds)
+        let allAssets = try database.mediaAssetDAO.allAssets(for: allMediaIds)
+        let uploadedPaths = try database.mediaAssetDAO.uploadedPaths()
         let calendar = Calendar.current
+
         var removed = 0
         for asset in allAssets {
-            guard let date = asset.capturedAt, calendar.component(.year, from: date) == year else { continue }
             guard !asset.sha256.isEmpty else { continue }
+            guard let localPath = asset.localPath else { continue }
+            let absolutePath = Self.resolvePath(localPath)
+            guard fileManager.fileExists(atPath: absolutePath) else { continue }
+
+            // 安全检查：确认远端已备份
+            let plainPath = SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
+            let encPath = SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
+            let isUploaded = uploadedPaths.contains(plainPath) || uploadedPaths.contains(encPath)
+
+            if !isUploaded {
+                // 未在 sync_uploaded 表中，查询远端是否确实存在
+                guard let provider = try? ProviderFactory.makeRemoteStorageProvider() else {
+                    WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：无法连接远端存储")
+                    continue
+                }
+                let plainExists = (try? await provider.contentLength(plainPath)) != nil
+                let encExists = plainExists ? true : ((try? await provider.contentLength(encPath)) != nil)
+                guard plainExists || encExists else {
+                    WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：远端不存在，删除将导致数据丢失")
+                    continue
+                }
+            }
+
             try removeLocalFiles(for: asset)
             removed += 1
         }

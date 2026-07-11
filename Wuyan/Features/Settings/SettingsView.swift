@@ -568,11 +568,13 @@ struct SettingsView: View {
     }
 
     private func evictYearMedia(year: Int) {
-        do {
-            let count = try appState.mediaStore.evictYearMedia(year: year)
-            mediaEvictMessage = "已清理 \(year) 年本地媒体 \(count) 个。"
-        } catch {
-            mediaEvictMessage = "清理失败：\(error.localizedDescription)"
+        Task {
+            do {
+                let count = try await appState.mediaStore.evictYearMedia(year: year)
+                mediaEvictMessage = "已清理 \(year) 年本地媒体 \(count) 个。"
+            } catch {
+                mediaEvictMessage = "清理失败：\(error.localizedDescription)"
+            }
         }
     }
 
