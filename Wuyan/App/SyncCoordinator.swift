@@ -7,6 +7,7 @@ import Combine
 final class SyncCoordinator: ObservableObject {
     let db: AppDatabase
     let entries: EntryDAO
+    /// R1-6: 共享 AppState 的 mediaStore，不再独立创建实例
     let mediaStore: LocalMediaStore
 
     @Published var syncMessage: String?
@@ -95,10 +96,10 @@ final class SyncCoordinator: ObservableObject {
         return true
     }
 
-    init(database: AppDatabase) {
+    init(database: AppDatabase, mediaStore: LocalMediaStore) {
         self.db = database
         self.entries = database.entryDAO
-        self.mediaStore = try! LocalMediaStore(database: database)
+        self.mediaStore = mediaStore
     }
 
     func syncNow(archivedYears: Set<Int>) {

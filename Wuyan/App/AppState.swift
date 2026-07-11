@@ -64,7 +64,7 @@ final class AppState: ObservableObject {
         self.entries = database.entryDAO
         self.dayNotes = database.dayNoteDAO
         self.mediaStore = try! LocalMediaStore(database: database)
-        self.syncCoordinator = SyncCoordinator(database: database)
+        self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore)
         self.aiService = AIService(
             provider: ProviderFactory.makeAIProvider(),
             isEnabled: AppSettings.aiEnabled,
