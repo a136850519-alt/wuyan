@@ -8,6 +8,14 @@ import os
 enum AppMigrationRunner {
     private static let versionKey = "wuyan.migration.version"
     private static let log = WuyanLog.general
+    /// Q01：迁移版本号的读写可注入。生产固定 standard；测试注入隔离 suite，
+    /// 构造 AppState 的测试不会读写用户的迁移标记。
+    private static var defaults: UserDefaults = .standard
+
+    /// 仅测试目标可调用：注入隔离的 UserDefaults。
+    static func injectDefaultsForTesting(_ injected: UserDefaults) {
+        defaults = injected
+    }
 
     /// 所有已注册的迁移步骤，按 version 升序排列。
     /// 新迁移只需在此数组追加一个条目。
@@ -18,9 +26,9 @@ enum AppMigrationRunner {
         // 注意：此迁移需要 database + fileManager，在 runMigrations 中特殊处理
     ]
 
-    /// 当前已完成的版本号（持久化在 UserDefaults）。
+    /// 当前已完成的版本号（持久化在注入的 defaults，生产为 standard）。
     static var currentVersion: Int {
-        UserDefaults.standard.integer(forKey: versionKey)
+        defaults.integer(forKey: versionKey)
     }
 
     /// 根入口：执行所有未完成的迁移。失败不崩溃，仅记日志。
@@ -57,6 +65,6 @@ enum AppMigrationRunner {
     }
 
     private static func markCompleted(_ version: Int) {
-        UserDefaults.standard.set(version, forKey: versionKey)
+        defaults.set(version, forKey: versionKey)
     }
 }

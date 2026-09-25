@@ -12,7 +12,7 @@ usage() {
 
 说明：
   - 把晤言的 WebDAV 地址和用户名写入本机 defaults
-  - 把 WebDAV 密码写入本机 defaults（若未传 --password，会交互式提示输入）
+  - 把 WebDAV 密码写入本机钥匙串（若未传 --password，会交互式提示输入）
   - 可选地把 onboarding 标记为已完成
 
 示例：
@@ -91,10 +91,13 @@ defaults write "$APP_BUNDLE_ID" "settings.webdav.baseURL" -string "$WEB_DAV_URL"
 defaults write "$APP_BUNDLE_ID" "settings.webdav.username" -string "$WEB_DAV_USERNAME"
 
 # 将密码写入 Keychain（不再写 defaults，避免明文泄露）
-# R0-10: 添加 -A 参数允许应用进程访问。CLI 创建的 Keychain 项默认无 ACL，
-# 导致沙盒应用运行时无法读取。如需更严格控制可用 -T 指定应用路径。
-security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -A -U 2>/dev/null \
-  || security add-generic-password -a "settings.webdav.password" -s "com.wuyan.app" -w "$WEB_DAV_PASSWORD" -A
+# 不使用 -A（允许所有应用访问）。钥匙串会按当前用户的访问控制处理首次读取；
+# 如需预先信任已安装的应用，可传 KEYCHAIN_TRUSTED_APP 指向应用可执行文件。
+KEYCHAIN_ARGS=(-a "settings.webdav.password" -s "com.wuyan.app" -U)
+if [[ -n "${KEYCHAIN_TRUSTED_APP:-}" ]]; then
+  KEYCHAIN_ARGS+=(-T "$KEYCHAIN_TRUSTED_APP")
+fi
+security add-generic-password "${KEYCHAIN_ARGS[@]}" -w "$WEB_DAV_PASSWORD"
 
 if [[ "$MARK_ONBOARDING_DONE" == "true" ]]; then
   defaults write "$APP_BUNDLE_ID" "onboarding.completed" -bool true

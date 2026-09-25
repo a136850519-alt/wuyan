@@ -14,26 +14,70 @@ protocol MediaStoreProtocol {
     func removeLocalFiles(for asset: MediaAsset) throws
 }
 
+enum MediaMigrationError: LocalizedError {
+    case moveFailed(source: String, destination: String, underlying: Error)
+    case destinationConflict(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .moveFailed(source, destination, underlying):
+            return "媒体迁移失败：\(source) -> \(destination)：\(underlying.localizedDescription)"
+        case let .destinationConflict(path):
+            return "媒体迁移发现同名文件内容不一致：\(path)"
+        }
+    }
+}
+
 final class LocalMediaStore: MediaStoreProtocol {
     private let database: AppDatabase
     private let fileManager: FileManager
     private let mediaURL: URL  // Application Support/Wuyan/media
 
     /// 媒体根目录（Application Support/Wuyan/），供外部解析相对路径使用。
-    static let mediaRootURL: URL = {
-        let fm = FileManager.default
-        // 使用 try! 因为 Application Support 目录一定存在
-        let support = try! fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return support.appendingPathComponent("Wuyan", isDirectory: true)
-    }()
+    /// C03：测试可注入隔离根目录（injectMediaRootForTesting），注入后环境变量
+    /// 与真实 Application Support 都不再参与解析；未注入时保持原行为。
+    private static var mediaRootOverride: URL?
 
-    /// 将 DB 中的相对路径解析为绝对路径。兼容旧版绝对路径（直接返回）。
+    /// 仅测试目标可调用：注入隔离的媒体根目录。传 nil 恢复默认解析。
+    static func injectMediaRootForTesting(_ url: URL?) {
+        mediaRootOverride = url
+    }
+
+    static var mediaRootURL: URL {
+        if let mediaRootOverride {
+            return mediaRootOverride
+        }
+        let fm = FileManager.default
+        if let override = ProcessInfo.processInfo.environment["WUYAN_MEDIA_ROOT"],
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        }
+        // 正常运行使用 Application Support；测试可通过环境变量注入隔离根目录。
+        let support = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fm.temporaryDirectory
+        return support.appendingPathComponent("Wuyan", isDirectory: true)
+    }
+
+    /// 将 DB 中的相对路径解析为绝对路径。旧版绝对路径只有在已经位于
+    /// Application Support/Wuyan 根目录内时才接受；其它路径返回空字符串，
+    /// 防止异常备份或损坏数据库借媒体字段访问应用目录之外的文件。
     /// R2-1: 外部调用应使用 MediaAsset.absoluteLocalPath / absoluteThumbnailPath，
     /// 此方法仅在 MediaStore 内部和 MediaAsset 模型层使用。
     static func resolvePath(_ relative: String) -> String {
-        // 如果已经是绝对路径（旧数据兼容），直接返回
-        if relative.hasPrefix("/") { return relative }
-        return mediaRootURL.appendingPathComponent(relative).path
+        guard !relative.isEmpty else { return "" }
+        let root = mediaRootURL.standardizedFileURL
+        let candidate: URL
+        if relative.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: relative).standardizedFileURL
+        } else {
+            candidate = root.appendingPathComponent(relative).standardizedFileURL
+        }
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path == root.path || candidate.path.hasPrefix(rootPath) else {
+            WuyanLog.security.warning("拒绝越界媒体路径：\(relative, privacy: .private)")
+            return ""
+        }
+        return candidate.path
     }
 
     /// Optional 版本：传入 nil 返回 nil。
@@ -45,11 +89,19 @@ final class LocalMediaStore: MediaStoreProtocol {
     /// 将绝对路径转为相对路径（相对 mediaRootURL）。无法转换时返回原路径。
     /// R2-1: 外部不应直接调用，仅 MediaStore 内部使用
     static func toRelativePath(_ absolute: String) -> String {
-        let prefix = mediaRootURL.path + "/"
-        if absolute.hasPrefix(prefix) {
-            return String(absolute.dropFirst(prefix.count))
+        guard !absolute.isEmpty else { return "" }
+        let root = mediaRootURL.standardizedFileURL
+        let candidate: URL
+        if absolute.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: absolute).standardizedFileURL
+        } else {
+            candidate = root.appendingPathComponent(absolute).standardizedFileURL
         }
-        return absolute
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path.hasPrefix(prefix) else {
+            return ""
+        }
+        return String(candidate.path.dropFirst(prefix.count))
     }
 
     init(database: AppDatabase, fileManager: FileManager = .default) throws {
@@ -65,6 +117,33 @@ final class LocalMediaStore: MediaStoreProtocol {
     // MARK: - Migration from Caches (R2-3: 由 AppMigrationRunner 调用)
 
     private static let migrationKey = "wuyan.media.migratedFromCaches"
+    /// Q01：迁移标记可注入。生产固定 standard；测试注入隔离 suite，
+    /// 构造 AppState 的测试不会读写/推进用户的真实迁移标记。
+    private static var defaults: UserDefaults = .standard
+
+    /// 仅测试目标可调用：注入隔离的 UserDefaults。
+    static func injectDefaultsForTesting(_ injected: UserDefaults) {
+        defaults = injected
+    }
+
+    /// C03：Caches 迁移的源目录。生产未注入时懒解析真实用户 Caches；
+    /// 测试注入临时目录后，AppState 构造触发的迁移只会搬动合成夹具，
+    /// 绝不读取或移动真实用户缓存（WUYAN_MEDIA_ROOT 只隔离目标端，隔离不了源端）。
+    private static var cachesSourceOverride: URL?
+
+    /// 仅测试目标可调用：注入隔离的 Caches 源目录。传 nil 恢复真实目录。
+    static func injectCachesSourceForTesting(_ url: URL?) {
+        cachesSourceOverride = url
+    }
+
+    /// 解析当前生效的 Caches 源目录。internal 供测试断言注入已生效。
+    static func currentCachesRoot(fileManager: FileManager) -> URL {
+        if let cachesSourceOverride {
+            return cachesSourceOverride
+        }
+        return (try? fileManager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false))
+            ?? fileManager.temporaryDirectory
+    }
 
     /// R2-3: 供 AppMigrationRunner 调用的媒体迁移入口。
     /// 幂等：已迁移时直接返回。
@@ -73,48 +152,57 @@ final class LocalMediaStore: MediaStoreProtocol {
     }
 
     private func migrateFromCachesIfNeeded() throws {
-        guard !UserDefaults.standard.bool(forKey: Self.migrationKey) else { return }
+        guard !Self.defaults.bool(forKey: Self.migrationKey) else { return }
 
         WuyanLog.media.info("开始媒体迁移：从 Caches 迁移到 Application Support")
-        let cachesURL = try fileManager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+        // C03：源目录经注入点解析；测试容器里永远不会触碰真实用户 Caches。
+        let cachesURL = Self.currentCachesRoot(fileManager: fileManager)
         let oldMediaURL = cachesURL.appendingPathComponent("Wuyan/media", isDirectory: true)
-
-        guard fileManager.fileExists(atPath: oldMediaURL.path) else {
-            // 没有旧 Caches 媒体文件，标记已迁移即可
-            UserDefaults.standard.set(true, forKey: Self.migrationKey)
-            WuyanLog.media.info("无旧 Caches 媒体，跳过迁移")
-            return
-        }
-
-        // 1. 将旧 Caches 下的文件逐个移到新目录
-        migrateDirectoryContents(from: oldMediaURL, to: mediaURL)
-
-        // 2. 迁移录音目录
         let oldRecordingsURL = cachesURL.appendingPathComponent("Wuyan/recordings", isDirectory: true)
         let newRecordingsURL = Self.mediaRootURL.appendingPathComponent("recordings", isDirectory: true)
+
+        // 1. 媒体和录音分别迁移。任一目录失败都不写完成标记，下一次启动会
+        // 从剩余源文件继续，避免「移动失败但已标记成功」导致永久丢附件。
+        if fileManager.fileExists(atPath: oldMediaURL.path) {
+            try migrateDirectoryContents(from: oldMediaURL, to: mediaURL)
+        }
         if fileManager.fileExists(atPath: oldRecordingsURL.path) {
-            try? fileManager.createDirectory(at: newRecordingsURL, withIntermediateDirectories: true)
-            migrateDirectoryContents(from: oldRecordingsURL, to: newRecordingsURL)
+            try fileManager.createDirectory(at: newRecordingsURL, withIntermediateDirectories: true)
+            try migrateDirectoryContents(from: oldRecordingsURL, to: newRecordingsURL)
         }
 
-        // 3. 将 DB 中绝对路径转为相对路径（同时把旧的 Caches 前缀替换掉）
+        // 2. 将 DB 中绝对路径转为相对路径（同时把旧的 Caches 前缀替换掉）
         try migrateDatabasePaths()
 
-        UserDefaults.standard.set(true, forKey: Self.migrationKey)
+        Self.defaults.set(true, forKey: Self.migrationKey)
         WuyanLog.media.info("媒体迁移完成")
     }
 
-    private func migrateDirectoryContents(from source: URL, to destination: URL) {
-        guard let contents = try? fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
+    private func migrateDirectoryContents(from source: URL, to destination: URL) throws {
+        guard fileManager.fileExists(atPath: source.path) else { return }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let contents = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
         for item in contents {
             let dest = destination.appendingPathComponent(item.lastPathComponent)
             if !fileManager.fileExists(atPath: dest.path) {
-                try? fileManager.moveItem(at: item, to: dest)
+                do {
+                    try fileManager.moveItem(at: item, to: dest)
+                } catch {
+                    throw MediaMigrationError.moveFailed(source: item.path, destination: dest.path, underlying: error)
+                }
             } else {
-                // 目标已存在，合并子内容（适用于 bucket 目录）
                 var isDir: ObjCBool = false
                 if fileManager.fileExists(atPath: dest.path, isDirectory: &isDir), isDir.boolValue {
-                    migrateDirectoryContents(from: item, to: dest)
+                    try migrateDirectoryContents(from: item, to: dest)
+                } else {
+                    // 同名文件已在目标目录时，只有内容完全一致才可视为已迁移。
+                    // 不一致必须中止，避免静默覆盖用户文件。
+                    let sourceHash = try fileHash(at: item)
+                    let destinationHash = try fileHash(at: dest)
+                    guard sourceHash == destinationHash else {
+                        throw MediaMigrationError.destinationConflict(dest.path)
+                    }
+                    try fileManager.removeItem(at: item)
                 }
             }
         }
@@ -132,8 +220,19 @@ final class LocalMediaStore: MediaStoreProtocol {
                 return "recordings/" + String(absolutePath[range.upperBound...])
             }
             // 已经在新 App Support 路径下：.../Application Support/Wuyan/media/ab/xxx.jpg → media/ab/xxx.jpg
-            return Self.toRelativePath(absolutePath)
+            let relative = Self.toRelativePath(absolutePath)
+            return relative.isEmpty ? nil : relative
         }
+    }
+
+    private func fileHash(at url: URL) throws -> SHA256.Digest {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize()
     }
 
     // MARK: - MediaStoreProtocol
@@ -186,28 +285,68 @@ final class LocalMediaStore: MediaStoreProtocol {
         return NSImage(contentsOfFile: absolutePath)
     }
 
+    /// A05：写入内存中的远端媒体前先校验内容指纹；本机已有缓存但内容不符时
+    /// 以校验通过的新内容覆盖（损坏缓存不可继续使用）。
     func storeRemoteMedia(_ data: Data, for asset: MediaAsset) throws -> URL {
-        let ext = URL(fileURLWithPath: asset.filename).pathExtension
-        let bucket = mediaURL.appendingPathComponent(String(asset.sha256.prefix(2)), isDirectory: true)
-        try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
-        let local = bucket.appendingPathComponent(ext.isEmpty ? asset.sha256 : "\(asset.sha256).\(ext)")
-        if !fileManager.fileExists(atPath: local.path) {
-            try data.write(to: local, options: .atomic)
-        }
+        try Self.verify(data, matches: asset.sha256, source: asset.filename)
+        let local = try materializeRemoteMedia(data, for: asset)
         var updated = asset
         updated.localPath = Self.toRelativePath(local.path)
         try database.mediaAssetDAO.save(updated)
         return local
     }
 
+    /// 将远端媒体写入内容寻址目录，但不修改数据库。
+    /// 备份还原可先完成所有文件落地，再一次性提交数据库记录。
+    /// A05：写入前后都校验 SHA-256——负载不符直接报错；已有缓存内容不符时覆盖。
+    func materializeRemoteMedia(_ data: Data, for asset: MediaAsset) throws -> URL {
+        try Self.verify(data, matches: asset.sha256, source: asset.filename)
+        let local = localMediaURL(for: asset)
+        let bucket = local.deletingLastPathComponent()
+        try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: local.path) {
+            // 内容寻址：已有文件校验一致才复用；不一致说明缓存损坏，必须覆盖。
+            let existing = try Data(contentsOf: local)
+            if try Self.hexDigest(of: existing) != asset.sha256 {
+                try data.write(to: local, options: .atomic)
+            }
+        } else {
+            try data.write(to: local, options: .atomic)
+        }
+        return local
+    }
+
+    /// 内容寻址媒体在本地媒体库中的目标位置。
+    func localMediaURL(for asset: MediaAsset) -> URL {
+        let ext = URL(fileURLWithPath: asset.filename).pathExtension
+        return mediaURL
+            .appendingPathComponent(String(asset.sha256.prefix(2)), isDirectory: true)
+            .appendingPathComponent(ext.isEmpty ? asset.sha256 : "\(asset.sha256).\(ext)")
+    }
+
     // 把断点续传下载好的完整文件落位到内容寻址缓存（移动而非读进内存，适合大视频）。
+    // A05：落位前对照资产元数据校验 SHA-256，等长损坏/错误旧前缀的内容绝不入缓存；
+    // 已有缓存校验一致时复用，不一致时以校验通过的新文件覆盖。
     func storeRemoteMediaFile(movingFrom tempURL: URL, for asset: MediaAsset) throws -> URL {
         let ext = URL(fileURLWithPath: asset.filename).pathExtension
         let bucket = mediaURL.appendingPathComponent(String(asset.sha256.prefix(2)), isDirectory: true)
         try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
         let local = bucket.appendingPathComponent(ext.isEmpty ? asset.sha256 : "\(asset.sha256).\(ext)")
-        if fileManager.fileExists(atPath: local.path) {
+        let tempData = try Data(contentsOf: tempURL)
+        guard try Self.hexDigest(of: tempData) == asset.sha256 else {
             try? fileManager.removeItem(at: tempURL)
+            throw RemoteStorageError.checksumMismatch(path: tempURL.path, expected: asset.sha256, actual: try Self.hexDigest(of: tempData))
+        }
+        defer { try? fileManager.removeItem(at: tempURL) }
+        if fileManager.fileExists(atPath: local.path) {
+            let existing = try Data(contentsOf: local)
+            if try Self.hexDigest(of: existing) == asset.sha256 {
+                // 缓存完好：丢弃临时文件即可。
+            } else {
+                // 缓存损坏：用校验通过的新文件覆盖。
+                try fileManager.removeItem(at: local)
+                try fileManager.moveItem(at: tempURL, to: local)
+            }
         } else {
             try fileManager.moveItem(at: tempURL, to: local)
         }
@@ -215,6 +354,19 @@ final class LocalMediaStore: MediaStoreProtocol {
         updated.localPath = Self.toRelativePath(local.path)
         try database.mediaAssetDAO.save(updated)
         return local
+    }
+
+    // MARK: - A05：完整性校验
+
+    private static func hexDigest(of data: Data) throws -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func verify(_ data: Data, matches sha256: String, source: String) throws {
+        let hex = try hexDigest(of: data)
+        guard hex == sha256 else {
+            throw RemoteStorageError.checksumMismatch(path: source, expected: sha256, actual: hex)
+        }
     }
 
     func storeRemoteThumbnail(_ data: Data, for asset: MediaAsset) throws {
@@ -288,9 +440,13 @@ final class LocalMediaStore: MediaStoreProtocol {
         let yearEntries = try database.entryDAO.timeline(filter: .year(year))
         let allMediaIds = yearEntries.flatMap(\.mediaIds)
         let allAssets = try database.mediaAssetDAO.allAssets(for: allMediaIds)
-        let uploadedPaths = try database.mediaAssetDAO.uploadedPaths()
+        // D08：上传缓存按后端身份隔离——拿当前后端的缓存判断，绝不能拿其它后端
+        // 的「已上传」记录批准本次删除。
+        let uploadedPaths = try database.mediaAssetDAO.uploadedPaths(backend: ProviderFactory.backendFingerprint())
 
         var removed = 0
+        var fallbackProvider: (any RemoteStorageProvider)?
+        var attemptedProviderCreation = false
         for asset in allAssets {
             guard !asset.sha256.isEmpty else { continue }
             guard let localPath = asset.localPath else { continue }
@@ -304,12 +460,16 @@ final class LocalMediaStore: MediaStoreProtocol {
 
             if !isUploaded {
                 // 未在 sync_uploaded 表中，查询远端是否确实存在
-                guard let provider = try? ProviderFactory.makeRemoteStorageProvider() else {
+                if !attemptedProviderCreation {
+                    attemptedProviderCreation = true
+                    fallbackProvider = try? ProviderFactory.makeRemoteStorageProvider()
+                }
+                guard let fallbackProvider else {
                     WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：无法连接远端存储")
                     continue
                 }
-                let plainExists = (try? await provider.contentLength(plainPath)) != nil
-                let encExists = plainExists ? true : ((try? await provider.contentLength(encPath)) != nil)
+                let plainExists = (try? await fallbackProvider.contentLength(plainPath)) != nil
+                let encExists = plainExists ? true : ((try? await fallbackProvider.contentLength(encPath)) != nil)
                 guard plainExists || encExists else {
                     WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：远端不存在，删除将导致数据丢失")
                     continue

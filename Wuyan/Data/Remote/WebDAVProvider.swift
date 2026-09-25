@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -57,6 +58,14 @@ struct WebDAVProvider: RemoteStorageProvider {
         return data
     }
 
+    func getVersioned(_ path: String) async throws -> RemoteObjectSnapshot {
+        let request = try request(path: path, method: "GET")
+        let (data, response) = try await send(request, method: "GET", path: path, allowed: [200])
+        let etag = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag")
+            ?? "sha256-" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return RemoteObjectSnapshot(data: data, etag: etag)
+    }
+
     func getRange(_ path: String, bytes: Range<Int64>) async throws -> Data {
         var request = try request(path: path, method: "GET")
         request.setValue("bytes=\(bytes.lowerBound)-\(bytes.upperBound - 1)", forHTTPHeaderField: "Range")
@@ -69,6 +78,29 @@ struct WebDAVProvider: RemoteStorageProvider {
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         _ = try await send(request, method: "PUT", path: path, allowed: [200, 201, 204])
+    }
+
+    func putConditionally(
+        _ path: String,
+        data: Data,
+        contentType: String,
+        ifMatch: String?,
+        ifNoneMatch: Bool
+    ) async throws {
+        var request = try request(path: path, method: "PUT")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let ifMatch { request.setValue(ifMatch, forHTTPHeaderField: "If-Match") }
+        if ifNoneMatch { request.setValue("*", forHTTPHeaderField: "If-None-Match") }
+        request.httpBody = data
+        let (_, response) = try await send(
+            request,
+            method: "PUT",
+            path: path,
+            allowed: [200, 201, 204, 409, 412]
+        )
+        if let status = (response as? HTTPURLResponse)?.statusCode, status == 409 || status == 412 {
+            throw RemoteStorageError.concurrentModification(path: path)
+        }
     }
 
     // 从文件流式 PUT：URLSession 直接从磁盘读取上传，不把整段（大视频）读进内存。

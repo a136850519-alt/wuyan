@@ -7,6 +7,7 @@ struct AIAssistantView: View {
     @State private var isRunning = false
     @State private var question = ""
     @State private var sourceEntryIds: [UUID] = []
+    @State private var retrievalNote: String?
 
     /// R2-2: 共享门控实例
     @StateObject private var consentGate = CloudAIConsentGateModel()
@@ -49,6 +50,11 @@ struct AIAssistantView: View {
                     }
                 }
             }
+            if let retrievalNote {
+                Text(retrievalNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         // R2-2: 使用共享云端 AI 授权门控，替代本视图内重复的 showsCloudConfirm + pendingAction
         .cloudAIConsentAlert(gate: consentGate)
@@ -74,8 +80,9 @@ struct AIAssistantView: View {
 
     private func summarizeRecent() {
         runStream {
-            // R1-3: 使用 recentEntries 替代 timeline(filter: .all) 全量加载
-            let entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
+            // 回顾按月份取数，避免把“最近 30 篇”误称为整月回顾。
+            let start = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date.distantPast
+            let entries = (try? appState.entries.entries(since: start)) ?? []
             return appState.aiService.streamSummary(entries: entries, period: .month)
         }
     }
@@ -84,19 +91,17 @@ struct AIAssistantView: View {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         run {
-            let entries = nonSensitiveEntries()
+            // 问答的候选范围是全部未删除条目；RAG 再按语义选取片段。
+            let entries = (try? appState.entries.timeline(filter: .all)) ?? []
             let answer = try await appState.aiService.ask(trimmed, entries: entries)
             await MainActor.run {
                 sourceEntryIds = answer.sourceEntryIds
+                retrievalNote = answer.retrievalWasDegraded
+                    ? "语义索引暂不可用，以上结果基于全部条目的顺序上下文。"
+                    : nil
             }
             return answer.answer
         }
-    }
-
-    private func nonSensitiveEntries() -> [Entry] {
-        // R1-3: 使用 recentEntries 替代 timeline(filter: .all) 全量加载
-        let entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
-        return appState.aiService.filterCloudAllowed(entries)
     }
 
     private func run(_ work: @escaping () async throws -> String) {
@@ -122,6 +127,7 @@ struct AIAssistantView: View {
     private func execute(_ work: @escaping () async throws -> String) {
         isRunning = true
         sourceEntryIds = []
+        retrievalNote = nil
         Task {
             do {
                 let result = try await work()
@@ -142,6 +148,7 @@ struct AIAssistantView: View {
         isRunning = true
         output = ""
         sourceEntryIds = []
+        retrievalNote = nil
         Task {
             do {
                 let stream = try await work()

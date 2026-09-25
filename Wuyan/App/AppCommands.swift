@@ -8,6 +8,10 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("新建日记") {
+                guard !appState.isRescueMode else {
+                    appState.errorMessage = "救援模式：新建已禁用。"
+                    return
+                }
                 appState.showNewEntryRitual()
             }
             .keyboardShortcut("n", modifiers: .command)
@@ -38,12 +42,7 @@ struct AppCommands: Commands {
 
             Button("删除当前条目") {
                 guard let id = appState.selectedEntryId else { return }
-                do {
-                    try appState.entries.softDelete(id: id)
-                    appState.selectedEntryId = nil
-                } catch {
-                    appState.errorMessage = error.localizedDescription
-                }
+                appState.softDelete(entryId: id)
             }
             .keyboardShortcut(.delete, modifiers: .command)
             .disabled(appState.selectedEntryId == nil)

@@ -130,7 +130,7 @@ struct OnboardingView: View {
 
     private func testWebDAV() {
         guard !isTestingWebDAV else { return }
-        saveWebDAVSettings(showMessage: false)
+        guard saveWebDAVSettings(showMessage: false) else { return }
         testMessage = "正在测试连接…"
         isTestingWebDAV = true
 
@@ -156,14 +156,19 @@ struct OnboardingView: View {
         }
     }
 
-    private func saveWebDAVSettings(showMessage: Bool = true) {
+    @discardableResult
+    private func saveWebDAVSettings(showMessage: Bool = true) -> Bool {
         webDAVBaseURL = webDAVBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         webDAVUsername = webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
+        guard SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword) else {
+            saveMessage = "密码无法保存到钥匙串，配置未生效。"
+            return false
+        }
         if showMessage {
             saveMessage = "WebDAV 配置已保存。"
             testMessage = nil
         }
+        return true
     }
 
     private func addBoard() {
@@ -172,6 +177,7 @@ struct OnboardingView: View {
         do {
             let board = Board(name: name, colorHex: "#D85A30", iconName: "book", sortOrder: boards.count)
             try appState.boards.save(board)
+            appState.syncCoordinator.notifyEditCompleted()
             boards = try appState.boards.all()
             newBoardName = ""
         } catch {

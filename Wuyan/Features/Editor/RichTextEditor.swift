@@ -1,6 +1,19 @@
 import AppKit
 import SwiftUI
 
+/// UI-09④：按设置页「正文字体」构造 NSFont，使字体设置贯穿正文输入框，
+/// 而不是只影响周边文本。霞鹜文楷 → 内嵌字体；系统衬线 → 系统字体 + serif 特征。
+enum EditorBodyFont {
+    static func nsFont(size: CGFloat) -> NSFont {
+        if AppSettings.bodyFont == "serif" {
+            let base = NSFont.systemFont(ofSize: size)
+            let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
+            return NSFont(descriptor: descriptor, size: size) ?? base
+        }
+        return NSFont(name: WuyanFont.bundledSerifName, size: size) ?? NSFont.systemFont(ofSize: size)
+    }
+}
+
 @MainActor
 final class RichTextEditorController: ObservableObject {
     fileprivate weak var textView: NSTextView?
@@ -100,7 +113,9 @@ struct RichTextEditor: NSViewRepresentable {
         textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 0, height: 8)
         textView.textContainer?.widthTracksTextView = true
-        textView.font = NSFont(name: WuyanFont.bundledSerifName, size: 18) ?? NSFont.systemFont(ofSize: 18)
+        // UI-09④：跟随设置页「正文字体」
+        textView.font = EditorBodyFont.nsFont(size: 18)
+        textView.typingAttributes[.font] = textView.font
         controller.textView = textView
         context.coordinator.load(textView: textView, text: text, rtfData: rtfData)
         return scrollView
@@ -165,7 +180,7 @@ struct RichTextEditor: NSViewRepresentable {
                 }
             }
 
-            let font = NSFont(name: WuyanFont.bundledSerifName, size: 18) ?? NSFont.systemFont(ofSize: 18)
+            let font = EditorBodyFont.nsFont(size: 18)
             let attributed = NSAttributedString(
                 string: text,
                 attributes: [

@@ -2,6 +2,9 @@ import Foundation
 
 protocol AIProvider: Sendable {
     var isLocal: Bool { get }
+    /// S04/UI-05：目的地描述（provider + 实际地址 + 模型），用于授权弹窗明示发送去向，
+    /// 并作为会话信任的绑定标识——配置变更后标识变化，旧授权自动失效。
+    var destinationDescription: String { get }
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String
     func stream(_ messages: [AIMessage], options: AIOptions) -> AsyncThrowingStream<String, Error>
     func embed(_ texts: [String]) async throws -> [[Float]]
@@ -65,4 +68,6 @@ struct MoodTrend {
 struct AnswerWithSources {
     var answer: String
     var sourceEntryIds: [UUID]
+    /// 语义索引不可用时显式标记降级，界面不得把最近条目回退伪装成完整检索。
+    var retrievalWasDegraded: Bool = false
 }

@@ -43,6 +43,10 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
     public var disallowCloudAI: Bool
     public var sortOrder: Int
     public var createdAt: Date
+    /// 板块自身的版本时间。用于跨设备合并重命名、排序和隐私策略变更。
+    public var updatedAt: Date
+    /// 非 nil 表示板块已删除，但保留为同步墓碑，避免跨设备复活。
+    public var deletedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -53,7 +57,9 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         babyBirthday: Date? = nil,
         disallowCloudAI: Bool = false,
         sortOrder: Int,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        updatedAt: Date? = nil,
+        deletedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -64,6 +70,43 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         self.disallowCloudAI = disallowCloudAI
         self.sortOrder = sortOrder
         self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+        self.deletedAt = deletedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, colorHex, iconName, kind, babyBirthday, disallowCloudAI,
+             sortOrder, createdAt, updatedAt, deletedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        colorHex = try c.decode(String.self, forKey: .colorHex)
+        iconName = try c.decode(String.self, forKey: .iconName)
+        kind = try c.decode(BoardKind.self, forKey: .kind)
+        babyBirthday = try c.decodeIfPresent(Date.self, forKey: .babyBirthday)
+        disallowCloudAI = try c.decodeIfPresent(Bool.self, forKey: .disallowCloudAI) ?? false
+        sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date.distantPast
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        deletedAt = try c.decodeIfPresent(Date.self, forKey: .deletedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(colorHex, forKey: .colorHex)
+        try c.encode(iconName, forKey: .iconName)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(babyBirthday, forKey: .babyBirthday)
+        try c.encode(disallowCloudAI, forKey: .disallowCloudAI)
+        try c.encode(sortOrder, forKey: .sortOrder)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(deletedAt, forKey: .deletedAt)
     }
 
     public static let builtIn: [Board] = [

@@ -45,7 +45,16 @@ enum SettingKey {
 
 /// 类型化访问器：读 UserDefaults 时提供默认值，避免散落各处。
 enum AppSettings {
-    private static let defaults = UserDefaults.standard
+    /// Q01：设置读取的 UserDefaults 实例。生产固定为 .standard；
+    /// 测试通过 injectDefaultsForTesting 注入随机 suite，保证测试不会
+    /// 读写/删除用户真实的偏好配置，也不依赖测试 runner 的默认域。
+    private static var defaults: UserDefaults = .standard
+
+    /// 仅测试目标可调用：注入隔离的 UserDefaults。
+    /// 生产代码绝不能调用（调用后设置将不再持久化到用户偏好）。
+    static func injectDefaultsForTesting(_ injected: UserDefaults) {
+        defaults = injected
+    }
 
     // MARK: - 存储与同步
     static var storageBackend: String {
@@ -124,6 +133,10 @@ enum AppSettings {
     }
     static var reminderTimes: [String] {
         defaults.array(forKey: SettingKey.reminderTimes) as? [String] ?? ["21:30"]
+    }
+    /// Q01：写入也必须走注入的 defaults，保证测试与生产共享同一条读写链路。
+    static func setReminderTimes(_ times: [String]) {
+        defaults.set(times, forKey: SettingKey.reminderTimes)
     }
     static var metadataEnabled: Bool {
         defaults.object(forKey: SettingKey.metadataEnabled) as? Bool ?? true

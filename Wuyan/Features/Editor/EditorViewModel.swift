@@ -27,6 +27,8 @@ final class EditorViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var isLoading = false
     private weak var appState: AppState?
+    /// 加载时的乐观版本，防止后台回写覆盖同步或用户的新编辑。
+    private var loadedContentHash: String?
 
     init() {
         Publishers.CombineLatest4($title, $body, $tagsText, $mood)
@@ -70,17 +72,20 @@ final class EditorViewModel: ObservableObject {
         saveTask = nil
         guard let id else {
             entry = nil
+            loadedContentHash = nil
             return
         }
 
         do {
             guard let fetched = try appState.entries.entry(id: id) else {
                 entry = nil
+                loadedContentHash = nil
                 return
             }
             isLoading = true
             isDirty = false
             entry = fetched
+            loadedContentHash = fetched.contentHash
             title = fetched.title ?? ""
             body = fetched.body
             bodyRTF = fetched.bodyRTF
@@ -102,6 +107,17 @@ final class EditorViewModel: ObservableObject {
     }
 
     func saveNow(appState: AppState) {
+        // UI-07：救援模式下数据库不可信，禁止制造「已保存」假象
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：数据库未正常加载，当前内容不会被保存。请先导出救援副本。"
+            return
+        }
+        // UI-02：归档进行中的年份锁定编辑，防止上传后本地删除丢掉新编辑
+        if let archiving = appState.archivingYear,
+           archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
+            appState.errorMessage = "正在归档 \(archiving) 年，该年份暂时锁定，归档完成后可继续编辑。"
+            return
+        }
         guard var entry else { return }
         entry.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title
         entry.body = body
@@ -112,14 +128,18 @@ final class EditorViewModel: ObservableObject {
             .filter { !$0.isEmpty }
         entry.mood = mood
         entry.journalDate = journalDate
+        // UI-08①（已确认）：改「记录时间」即改归属日——按天分组与年度归档
+        // 跟随用户认定的日期；跨年修改会同时移动归档年份。
+        entry.dayDate = DayKey.string(from: journalDate)
         entry.isFavorite = isFavorite
         if let boardId {
             entry.boardId = boardId
         }
 
         do {
-            try appState.entries.save(entry)
+            try appState.entries.save(entry, expectedContentHash: loadedContentHash)
             self.entry = try appState.entries.entry(id: entry.id) ?? entry
+            loadedContentHash = self.entry?.contentHash
             self.isDirty = false
             self.lastSavedAt = Date()
             appState.refreshRemindersForToday()
@@ -131,7 +151,17 @@ final class EditorViewModel: ObservableObject {
     }
 
     func delete(appState: AppState) {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：删除已禁用。"
+            return
+        }
         guard let id = entry?.id else { return }
+        // UI-02：归档进行中的年份锁定删除操作
+        if let archiving = appState.archivingYear,
+           archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
+            appState.errorMessage = "正在归档 \(archiving) 年，该年份暂时锁定。"
+            return
+        }
         do {
             try appState.entries.softDelete(id: id)
             appState.selectedEntryId = nil
@@ -141,15 +171,27 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    func importMedia(urls: [URL], appState: AppState) {
-        guard let entry else { return }
+    func importMedia(urls: [URL], appState: AppState, entryId: UUID? = nil, cleanupAfterImport: [URL] = []) {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：附件导入已禁用。"
+            return
+        }
+        // UI-09③：允许显式指定归属条目（录音停止时导入到录音开始时绑定的条目）；
+        // 未指定时导入到当前编辑的条目。
+        guard let targetId = entryId ?? entry?.id else { return }
         Task {
             do {
                 for url in urls {
-                    _ = try await appState.mediaStore.importMedia(url, entryId: entry.id)
+                    _ = try await appState.mediaStore.importMedia(url, entryId: targetId)
+                }
+                appState.syncCoordinator.notifyEditCompleted()
+                for url in cleanupAfterImport {
+                    try? FileManager.default.removeItem(at: url)
                 }
                 await MainActor.run {
-                    self.load(id: entry.id, appState: appState)
+                    if self.entry?.id == targetId {
+                        self.load(id: targetId, appState: appState)
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -160,6 +202,11 @@ final class EditorViewModel: ObservableObject {
     }
 
     func saveMetadata(appState: AppState) {
+        // UI-07：救援模式禁止写入
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：数据库未正常加载，当前修改不会被保存。"
+            return
+        }
         guard var entry else { return }
         let condition = weatherCondition.trimmingCharacters(in: .whitespacesAndNewlines)
         if !condition.isEmpty {
@@ -196,8 +243,10 @@ final class EditorViewModel: ObservableObject {
         }
 
         do {
-            try appState.entries.save(entry)
+            try appState.entries.save(entry, expectedContentHash: loadedContentHash)
             self.entry = try appState.entries.entry(id: entry.id) ?? entry
+            loadedContentHash = self.entry?.contentHash
+            appState.syncCoordinator.notifyEditCompleted()
         } catch {
             appState.errorMessage = error.localizedDescription
         }
@@ -205,7 +254,7 @@ final class EditorViewModel: ObservableObject {
 
     /// 将当前条目的未落盘变更立即同步写出（切换条目/退出时调用）
     func flushIfNeeded(appState: AppState) {
-        guard saveTask != nil, entry != nil else { return }
+        guard isDirty, entry != nil else { return }
         saveTask?.cancel()
         saveTask = nil
         saveNow(appState: appState)
@@ -221,6 +270,7 @@ final class EditorViewModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self, let appState = self.appState else { return }
                 self.saveNow(appState: appState)
+                self.saveTask = nil
             }
         }
     }

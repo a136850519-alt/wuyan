@@ -31,13 +31,15 @@ public struct MediaAsset: Identifiable, Codable, Equatable, FetchableRecord, Per
     /// 本地文件的绝对路径。nil 若 localPath 为空。
     public var absoluteLocalPath: String? {
         guard let localPath else { return nil }
-        return LocalMediaStore.resolvePath(localPath)
+        let resolved = LocalMediaStore.resolvePath(localPath)
+        return resolved.isEmpty ? nil : resolved
     }
 
     /// 缩略图的绝对路径。nil 若 thumbnailPath 为空。
     public var absoluteThumbnailPath: String? {
         guard let thumbnailPath else { return nil }
-        return LocalMediaStore.resolvePath(thumbnailPath)
+        let resolved = LocalMediaStore.resolvePath(thumbnailPath)
+        return resolved.isEmpty ? nil : resolved
     }
 
     public init(

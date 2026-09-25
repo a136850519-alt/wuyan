@@ -6,7 +6,33 @@ struct OllamaProvider: AIProvider {
     var embeddingModel: String
     var session: URLSession = .shared
 
-    var isLocal: Bool { true }
+    /// S04/UI-05：「本地」必须基于实际目的地址判断，不能因为 provider 叫 Ollama 就视为本地。
+    /// 仅回环地址（localhost / 127.x / ::1）视为本地；用户填写的局域网或公网地址
+    /// 一律按远程服务对待——必须经云 AI 授权确认，且受私密板块过滤约束。
+    var isLocal: Bool { Self.isLoopback(endpoint) }
+
+    static func isLoopback(_ endpoint: URL) -> Bool {
+        guard let host = endpoint.host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
+        // 127.0.0.0/8 整段都是回环，但必须先确认是合法 IPv4，避免把
+        // 127.example.com 这类公网域名误当成本机地址。
+        let octets = host.split(separator: ".")
+        if octets.count == 4,
+           octets.allSatisfy({ part in
+               guard let value = Int(part), String(value) == String(part) || part == "0" else { return false }
+               return (0...255).contains(value)
+           }),
+           octets.first == "127" { return true }
+        return false
+    }
+
+    var destinationDescription: String {
+        "Ollama（\(endpoint.absoluteString)，对话模型 \(model)，嵌入模型 \(embeddingModel)）"
+    }
+
+    private var hostDisplay: String {
+        endpoint.host ?? endpoint.absoluteString
+    }
 
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String {
         let requestBody = OllamaChatRequest(model: model, messages: messages.map { .init(role: $0.role.rawValue, content: $0.content) }, stream: false, options: .init(temperature: options.temperature, num_predict: options.maxTokens))

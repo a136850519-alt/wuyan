@@ -4,7 +4,20 @@ import Security
 
 /// 远端存储/AI/加密 的工厂方法：从 UserDefaults + Keychain 读取配置并构建 provider 实例。
 enum ProviderFactory {
+    /// C03：AI provider 工厂可注入。AppState 构造与 reloadAISettings 都会调用
+    /// makeAIProvider()——默认智谱分支会经 SecureSettings.load 读取生产 Keychain。
+    /// 测试注入后该链路被整体短路，不再触碰真实凭据；传 nil 恢复默认工厂。
+    private static var aiProviderOverride: (@Sendable () -> AIProvider?)?
+
+    /// 仅测试目标可调用：注入 AI provider 工厂（返回 nil 表示未配置 provider）。
+    static func injectAIProviderForTesting(_ factory: (@Sendable () -> AIProvider?)?) {
+        aiProviderOverride = factory
+    }
+
     static func makeAIProvider() -> AIProvider? {
+        if let aiProviderOverride {
+            return aiProviderOverride()
+        }
         let provider = AppSettings.aiProvider
         if provider == "zhipu" {
             // R2-7: 直接用 AppSettings（已含 trim），URL 化在此完成
@@ -77,11 +90,18 @@ enum ProviderFactory {
             salt = data
         } else {
             var bytes = [UInt8](repeating: 0, count: 16)
-            _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+                WuyanLog.security.error("生成同步加密盐失败，已拒绝启用加密")
+                return nil
+            }
             salt = Data(bytes)
             UserDefaults.standard.set(salt.base64EncodedString(), forKey: SettingKey.cryptoSalt)
         }
-        return try? SyncCrypto(passphrase: passphrase, salt: salt)
+        return try? SyncCrypto(
+            passphrase: passphrase,
+            salt: salt,
+            persistenceKey: "sync.pendingCryptoHeader.\(backendFingerprint())"
+        )
     }
 
     static func backendFingerprint() -> String {

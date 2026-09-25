@@ -3,12 +3,18 @@ import Security
 
 struct Keychain {
     static let service = "com.wuyan.app"
+    static let testService = "com.wuyan.tests"
+    private let serviceName: String
+
+    init(service: String = Keychain.service) {
+        self.serviceName = service
+    }
 
     func string(for account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: serviceName,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -24,7 +30,7 @@ struct Keychain {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
-            kSecAttrService as String: Self.service
+            kSecAttrService as String: serviceName
         ]
         if let value {
             let data = Data(value.utf8)
@@ -43,8 +49,8 @@ struct Keychain {
                 return addStatus == errSecSuccess
             }
         } else {
-            SecItemDelete(query as CFDictionary)
-            return true
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
         }
     }
 }

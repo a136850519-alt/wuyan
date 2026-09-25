@@ -210,15 +210,15 @@ struct SidebarView: View {
     }
 
     private func delete(_ board: Board) {
-        do {
-            try appState.boards.delete(id: board.id)
-            if appState.sidebarSelection.boardId == board.id {
-                appState.sidebarSelection = .all
-            }
-            reloadBoards()
-        } catch {
-            appState.errorMessage = error.localizedDescription
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：板块修改已禁用。"
+            return
         }
+        appState.deleteBoard(boardId: board.id)
+        if appState.sidebarSelection.boardId == board.id {
+            appState.sidebarSelection = .all
+        }
+        reloadBoards()
     }
 }
 
@@ -372,6 +372,10 @@ private struct BoardEditorSheet: View {
     }
 
     private func save() {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：板块修改已禁用。"
+            return
+        }
         do {
             let sortOrder = (try? appState.boards.all().count) ?? 0
             let updated = Board(
@@ -386,6 +390,9 @@ private struct BoardEditorSheet: View {
                 createdAt: board?.createdAt ?? Date()
             )
             try appState.boards.save(updated)
+            // A privacy toggle must take effect for AI requests in the same session.
+            appState.reloadAISettings()
+            appState.syncCoordinator.notifyEditCompleted()
             dismiss()
         } catch {
             appState.errorMessage = error.localizedDescription

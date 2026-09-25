@@ -8,6 +8,10 @@ struct ClaudeProvider: AIProvider {
 
     var isLocal: Bool { false }
 
+    var destinationDescription: String {
+        "云端 Claude（\(endpoint.absoluteString)，模型 \(model)）"
+    }
+
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String {
         guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
         let system = messages.first(where: { $0.role == .system })?.content

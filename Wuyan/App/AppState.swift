@@ -43,10 +43,16 @@ final class AppState: ObservableObject {
     @Published var boardChooserDay: String?
     /// 全局错误信息：同步错误和其他运行时错误统一汇聚于此，由 RootView 弹出 alert。
     @Published var errorMessage: String?
-    /// 全局云端 AI 信任标记：同一会话内确认一次后，AIAssistantView 和 RitualView 共享。
-    @Published var trustCloudForSession = false
+    /// 全局云端 AI 信任标记：绑定到「provider + 实际目的地」标识（S04/UI-05）。
+    /// 同一会话内对同一目的地确认一次后共享；配置变更（换 provider / 改地址）后
+    /// 标识变化，旧授权自动失效，需要重新确认。
+    @Published var trustCloudDestination: String?
     /// 已归档年份（本地内容已删除、仅存于 NAS）。按降序排列。
     @Published var archivedYears: [Int] = []
+    /// UI-02（已确认）：归档进行中的年份——该年份内容锁定编辑，防止归档后本地删除丢掉新编辑。
+    @Published var archivingYear: Int?
+    /// UI-07：数据库打开失败的只读救援模式。禁止编辑与同步，提供救援副本导出。
+    let isRescueMode: Bool
 
     // 同步状态前向属性（兼容已有视图引用）
     var syncMessage: String? { syncCoordinator.syncMessage }
@@ -56,11 +62,12 @@ final class AppState: ObservableObject {
     /// 订阅 SyncCoordinator 的 objectWillChange，使其 @Published 变化能触发本对象 UI 刷新。
     private var syncCancellable: AnyCancellable?
 
-    // R2-6: 使用 SettingKey 常量替代硬编码字符串
-    private static let archivedYearsKey = SettingKey.archivedYears
+    // R2-6/Q01: 归档年份的读写统一经 AppSettings（SettingKey.archivedYears），
+    // AppState 不再直接持有 defaults key。
 
-    init(database: AppDatabase) {
+    init(database: AppDatabase, rescueMode: Bool = false) {
         self.db = database
+        self.isRescueMode = rescueMode
         self.boards = database.boardDAO
         self.entries = database.entryDAO
         self.dayNotes = database.dayNoteDAO
@@ -81,14 +88,16 @@ final class AppState: ObservableObject {
             }
         }
         self.mediaStore = mediaStore
-        self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore)
+        self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore, rescueMode: rescueMode)
         self.aiService = AIService(
             provider: ProviderFactory.makeAIProvider(),
             isEnabled: AppSettings.aiEnabled,
             ritualPolishingEnabled: AppSettings.aiRitual
         )
         self.aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
-        let stored = UserDefaults.standard.array(forKey: Self.archivedYearsKey) as? [Int] ?? []
+        // Q01：归档年份读写统一走 AppSettings（可注入 defaults），
+        // 测试构造的 AppState 与被测设置共享同一容器。
+        let stored = AppSettings.archivedYears
         self.archivedYears = stored.sorted(by: >)
 
         // R2-3: 通过 AppMigrationRunner 触发媒体 Caches 迁移（v2）
@@ -122,14 +131,17 @@ final class AppState: ObservableObject {
             years.remove(year)
             self.setArchivedYears(years)
         }
+        // UI-02：归档结束（无论成败）解除该年份的编辑锁定
+        syncCoordinator.onArchiveFinished = { [weak self] _ in
+            self?.archivingYear = nil
+        }
     }
 
-    /// 更新 archivedYears 并持久化到 UserDefaults。
-    /// R0-2: 改为 internal 以便 SyncCoordinator 回调链路可达。
+    /// 更新 archivedYears 并持久化。Q01：经由 AppSettings 写入（可注入 defaults）。
     func setArchivedYears(_ years: Set<Int>) {
         let sorted = years.sorted(by: >)
         archivedYears = sorted
-        UserDefaults.standard.set(sorted, forKey: Self.archivedYearsKey)
+        AppSettings.setArchivedYears(sorted)
     }
 
     private static func cloudBlockedBoardIds(_ boards: BoardDAO) -> Set<UUID> {
@@ -177,9 +189,14 @@ final class AppState: ObservableObject {
 
     /// 永久删除条目，并清理「已无其它条目引用」的本地媒体文件。
     func permanentlyDelete(entryId: UUID) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：删除已禁用。"
+            return
+        }
         do {
             let assets = (try? entries.entry(id: entryId)).flatMap { try? db.mediaAssetDAO.allAssets(for: $0.mediaIds) } ?? []
             try entries.permanentlyDelete(id: entryId)
+            syncCoordinator.notifyEditCompleted()
             for asset in assets where ((try? db.mediaAssetDAO.referenceCount(sha256: asset.sha256)) ?? 1) == 0 {
                 try? mediaStore.removeLocalFiles(for: asset)
             }
@@ -191,31 +208,57 @@ final class AppState: ObservableObject {
     // MARK: - 同步前向方法
 
     func syncNow() {
+        // UI-07：救援模式禁止同步，避免把内存降级库的内容当作真实数据推送
+        guard !isRescueMode else {
+            errorMessage = "救援模式：数据库未正常加载，同步已禁用。"
+            return
+        }
         syncCoordinator.syncNow(archivedYears: Set(archivedYears))
     }
 
     func archiveYearToRemote(_ year: Int) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：归档已禁用。"
+            return
+        }
+        // UI-02：归档期间该年份锁定；同时只允许一个归档任务
+        if let running = archivingYear {
+            errorMessage = "已有 \(running) 年归档任务进行中，请等待完成。"
+            return
+        }
+        archivingYear = year
         syncCoordinator.archiveYearToRemote(year, archivedYears: Set(archivedYears))
-        // 归档成功后由调用方更新 archivedYears
     }
 
     func downloadYearFromRemote(_ year: Int) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：下载已禁用。"
+            return
+        }
         syncCoordinator.downloadYearFromRemote(year)
         // 下载成功后由调用方更新 archivedYears
     }
 
     func enrichEntryMetadataIfNeeded(_ entryId: UUID) {
+        guard !isRescueMode else { return }
         guard AppSettings.metadataEnabled else { return }
         Task {
-            guard let location = await locationMetadata.requestLocation(),
-                  var entry = try? entries.entry(id: entryId)
+            guard let initial = try? entries.entry(id: entryId),
+                  let location = await locationMetadata.requestLocation()
             else { return }
             let placeName = await locationMetadata.geocode(location)
-            entry.location = GeoPlace(lat: location.coordinate.latitude, lon: location.coordinate.longitude, placeName: placeName)
-            if let weather = try? await OpenMeteoService().current(lat: location.coordinate.latitude, lon: location.coordinate.longitude) {
-                entry.weather = weather
+            let newLocation = GeoPlace(lat: location.coordinate.latitude, lon: location.coordinate.longitude, placeName: placeName)
+            let newWeather = try? await OpenMeteoService().current(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
+            // 网络等待期间若用户编辑、同步或删除了条目，版本条件会使旧结果被丢弃。
+            let updated = try? entries.updateMetadata(
+                id: entryId,
+                expectedContentHash: initial.contentHash,
+                weather: newWeather ?? initial.weather,
+                location: newLocation
+            )
+            if updated == true {
+                syncCoordinator.notifyEditCompleted()
             }
-            try? entries.save(entry)
         }
     }
 
@@ -224,8 +267,59 @@ final class AppState: ObservableObject {
         let times = Self.reminderTimesFromDefaults()
         Task {
             let today = Date().dayKey
-            let hasWrittenToday = ((try? entries.timeline(filter: .day(today))) ?? []).isEmpty == false
+            // UI-09①：空草稿不算「已写」——今天只有草稿时仍按未写处理
+            let todays = (try? entries.timeline(filter: .day(today))) ?? []
+            let hasWrittenToday = todays.contains { !$0.isDraft }
             await ReminderScheduler().refreshForToday(hasWrittenToday: hasWrittenToday, times: times)
+        }
+    }
+
+    func restoreEntry(entryId: UUID) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：还原已禁用。"
+            return
+        }
+        do {
+            try entries.restore(id: entryId)
+            syncCoordinator.notifyEditCompleted()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 所有删除入口共用同一条路径，确保救援模式和归档锁定规则一致。
+    func softDelete(entryId: UUID) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：删除已禁用。"
+            return
+        }
+        guard let current = try? entries.entry(id: entryId) else { return }
+        if let archiving = archivingYear,
+           archiving == Self.year(fromDayKey: current.dayDate) {
+            errorMessage = "正在归档 \(archiving) 年，该年份暂时锁定。"
+            return
+        }
+        do {
+            try entries.softDelete(id: entryId)
+            syncCoordinator.notifyEditCompleted()
+            if selectedEntryId == entryId { selectedEntryId = nil }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteBoard(boardId: UUID) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：板块修改已禁用。"
+            return
+        }
+        do {
+            try boards.delete(id: boardId)
+            // Keep the service-layer privacy filter in sync with board removal.
+            reloadAISettings()
+            syncCoordinator.notifyEditCompleted()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -234,6 +328,42 @@ final class AppState: ObservableObject {
         aiService.isEnabled = AppSettings.aiEnabled
         aiService.ritualPolishingEnabled = AppSettings.aiRitual
         aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
+    }
+
+    // MARK: - UI-07：救援模式
+
+    /// 真实数据库文件位置（救援副本导出来源）。
+    static var productionDatabaseURL: URL {
+        let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return (base?.appendingPathComponent("Wuyan", isDirectory: true) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("Wuyan.sqlite")
+    }
+
+    /// 导出救援副本：把真实数据库文件（含 WAL/SHM）复制到用户指定目录。
+    /// 救援模式下唯一的数据出口；复制失败会抛错并显示。
+    func exportRescueCopy(to directory: URL) throws -> URL {
+        let fm = FileManager.default
+        let source = Self.productionDatabaseURL
+        guard fm.fileExists(atPath: source.path) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: source.path])
+        }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let destination = directory.appendingPathComponent("Wuyan-rescue-\(stamp).sqlite")
+        try fm.copyItem(at: source, to: destination)
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: source.path + suffix)
+            if fm.fileExists(atPath: sidecar.path) {
+                // A rescue copy without a present WAL/SHM sidecar may be unreadable;
+                // propagate the copy error instead of reporting a partial success.
+                try fm.copyItem(at: sidecar, to: URL(fileURLWithPath: destination.path + suffix))
+            }
+        }
+        return destination
     }
 
     // MARK: - 静态辅助（无状态）
@@ -251,7 +381,8 @@ final class AppState: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm"
-        UserDefaults.standard.set(dates.map { formatter.string(from: $0) }, forKey: SettingKey.reminderTimes)
+        // Q01：读写统一走 AppSettings（可注入 defaults），测试不再触碰 standard 域。
+        AppSettings.setReminderTimes(dates.map { formatter.string(from: $0) })
     }
 
     static func year(fromDayKey dayKey: String) -> Int {

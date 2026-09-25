@@ -38,6 +38,10 @@ final class RitualViewModel: ObservableObject {
     }
 
     func generate(appState: AppState) async {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：新建内容已禁用。"
+            return
+        }
         let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         isGenerating = true
         let line = await appState.poeticGenerator.line(from: summary)
@@ -48,6 +52,7 @@ final class RitualViewModel: ObservableObject {
         )
         do {
             try appState.dayNotes.upsert(note)
+            appState.syncCoordinator.notifyEditCompleted()
             dayNote = note
             revealPoeticLine()
         } catch {
@@ -57,10 +62,15 @@ final class RitualViewModel: ObservableObject {
     }
 
     func skip(appState: AppState) async {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：新建内容已禁用。"
+            return
+        }
         if rawSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let note = DayNote(rawSummary: "", poeticLine: "今日留白，也算一笔。", generatedBy: nil)
             do {
                 try appState.dayNotes.upsert(note)
+                appState.syncCoordinator.notifyEditCompleted()
                 dayNote = note
                 step = .board
                 revealBoards()
@@ -73,9 +83,14 @@ final class RitualViewModel: ObservableObject {
     }
 
     func createEntry(board: Board, appState: AppState) {
+        guard !appState.isRescueMode else {
+            appState.errorMessage = "救援模式：新建内容已禁用。"
+            return
+        }
         guard let dayNote else { return }
         do {
             let entry = try appState.entries.create(boardId: board.id, dayNote: dayNote)
+            appState.syncCoordinator.notifyEditCompleted()
             appState.enrichEntryMetadataIfNeeded(entry.id)
             let year = AppState.year(fromDayKey: entry.dayDate)
             appState.sidebarSelection = .yearBoard(year, board.id)

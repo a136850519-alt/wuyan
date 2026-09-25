@@ -60,23 +60,23 @@ final class ReminderScheduler {
         }
     }
 
-    /// 刷新今天的提醒状态：今天已写且用户选择跳过 → 仅取消今天剩余时段，保留未来天数。
+    /// 刷新提醒状态。
+    /// UI-09②：每次调用都先把未来 14 天窗口重新铺满——否则长期不启动应用后
+    /// 窗口耗尽，提醒静默消失；启动与每次保存都会走到这里，实现自动续排。
+    /// 已写今天的跳过逻辑保留：铺满后仅取消今天剩余时段。
     /// R0-8: 使用 DayKey.today（3am 规则）判断"今天"。
     func refreshForToday(hasWrittenToday: Bool, times: [DateComponents]) async {
+        await setDailyReminders(times)
         let skip = UserDefaults.standard.bool(forKey: skipWrittenDaysKey)
-        let center = UNUserNotificationCenter.current()
-
         if skip && hasWrittenToday {
             // 仅取消今天剩余的通知，不移除未来天数的
+            let center = UNUserNotificationCenter.current()
             let pending = await center.pendingNotificationRequests()
             let todayStr = DayKey.today
             let todayIds = pending.map(\.identifier).filter { $0.hasPrefix("wuyan.daily.\(todayStr).") }
             if !todayIds.isEmpty {
                 center.removePendingNotificationRequests(withIdentifiers: todayIds)
             }
-        } else {
-            // 完整重新注册未来 N 天
-            await setDailyReminders(times)
         }
     }
 

@@ -8,6 +8,10 @@ struct ZhipuProvider: AIProvider {
 
     var isLocal: Bool { false }
 
+    var destinationDescription: String {
+        "云端智谱（\(endpoint.absoluteString)，模型 \(model)）"
+    }
+
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String {
         guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
         var request = makeRequest()

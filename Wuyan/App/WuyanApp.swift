@@ -22,14 +22,14 @@ struct WuyanApp: App {
             let state = AppState(database: database)
             _appState = StateObject(wrappedValue: state)
         } catch {
-            // 数据库无法打开时仍需提供可用 AppState（降级模式），
-            // 而非 fatalError 让用户每次启动都崩。
+            // 数据库无法打开：进入只读救援模式（UI-07，已确认）——
+            // 不再把可写内存库伪装成正常状态（虚假保存 + 照常同步）。
             WuyanLog.general.error("数据库初始化失败：\(error.localizedDescription)")
             do {
-                // 尝试创建临时数据库（内存模式）作为降级
+                // 内存库仅为维持界面结构可用；编辑与同步在 AppState 中被禁用
                 let database = try AppDatabase.makeInMemory()
-                let state = AppState(database: database)
-                state.errorMessage = "数据库加载失败，已降级为空数据库。请检查磁盘空间或重启应用。"
+                let state = AppState(database: database, rescueMode: true)
+                state.errorMessage = "数据库加载失败，已进入只读救援模式：编辑与同步已禁用，当前输入不会被保存。请先导出救援副本。"
                 _appState = StateObject(wrappedValue: state)
             } catch {
                 // 连内存数据库都创建不了，这才 fatalError
@@ -45,13 +45,19 @@ struct WuyanApp: App {
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(WindowMaximizer())
                 .onAppear {
-                    // 启动后 10 秒自动同步
-                    appState.syncCoordinator.scheduleStartupSync()
+                    // Refill the non-repeating reminder window on every launch.
+                    appState.refreshRemindersForToday()
+                    // 启动后 10 秒自动同步（UI-07：救援模式下禁用同步）
+                    if !appState.isRescueMode {
+                        appState.syncCoordinator.scheduleStartupSync()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     NotificationCenter.default.post(name: .wuyanWillTerminate, object: nil)
                 }
-                .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+                // NSWorkspace posts wake events through its own notification center;
+                // subscribing to NotificationCenter.default can miss the event.
+                .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
                     // 系统从睡眠恢复后自动同步
                     appState.syncCoordinator.handleWakeFromSleep()
                 }

@@ -4,12 +4,13 @@ struct StreakTracker {
     let dayKeys: [String]
     var calendar = Calendar.current
 
+    /// UI-09①：空草稿不算「已写」——只有保存了实质内容（非草稿）的日记才计入连续记录。
     init(entries: [Entry]) {
-        dayKeys = entries.filter { !$0.deleted }.map(\.dayDate)
+        dayKeys = entries.filter { !$0.deleted && !$0.isDraft }.map(\.dayDate)
     }
 
     init(summaries: [EntrySummary]) {
-        dayKeys = summaries.map(\.dayDate)
+        dayKeys = summaries.filter { !$0.isDraft }.map(\.dayDate)
     }
 
     func currentStreak(asOf date: Date = Date()) -> Int {

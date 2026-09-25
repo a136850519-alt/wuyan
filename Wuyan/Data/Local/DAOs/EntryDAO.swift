@@ -19,6 +19,17 @@ public enum TimelineFilter: Equatable {
     case day(String)
 }
 
+public enum EntrySaveError: LocalizedError {
+    case concurrentModification(UUID)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .concurrentModification(id):
+            return "条目在保存前已被其它操作更新（\(id.uuidString.prefix(8))）。已保留当前编辑内容，请重新载入后再保存。"
+        }
+    }
+}
+
 public struct EntryDAO: EntryRepository {
     let writer: DatabaseWriter
 
@@ -63,7 +74,7 @@ public struct EntryDAO: EntryRepository {
     func timelineSummaries(filter: TimelineFilter = .all) throws -> [EntrySummary] {
         try writer.read { db in
             var sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
                 FROM entry
                 WHERE deleted = 0
                 """
@@ -104,7 +115,7 @@ public struct EntryDAO: EntryRepository {
         let observation = ValueObservation.tracking { db in
             var sql = """
                 SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength,
-                       isFavorite, boardId, tags
+                       isFavorite, boardId, tags, isDraft
                 FROM entry
                 WHERE deleted = 0
                 """
@@ -159,7 +170,7 @@ public struct EntryDAO: EntryRepository {
             let idStrings = ids.map { $0.uuidString }
             let placeholders = idStrings.map { _ in "?" }.joined(separator: ",")
             let sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
                 FROM entry
                 WHERE id IN (\(placeholders))
                 """
@@ -172,7 +183,7 @@ public struct EntryDAO: EntryRepository {
     func recentSummaries(limit: Int = 30) throws -> [EntrySummary] {
         try writer.read { db in
             let sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
                 FROM entry
                 WHERE deleted = 0
                 ORDER BY journalDate DESC
@@ -194,6 +205,18 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// 按业务时间范围读取完整条目，供回顾等明确范围的 AI 功能使用。
+    /// 查询在数据库侧过滤，避免把多年正文全部加载到主线程后再截取。
+    func entries(since date: Date) throws -> [Entry] {
+        try writer.read { db in
+            try Entry
+                .filter(Entry.Columns.deleted == false)
+                .filter(Entry.Columns.journalDate >= date)
+                .order(Entry.Columns.journalDate.asc, Entry.Columns.updatedAt.asc)
+                .fetchAll(db)
+        }
+    }
+
     public func entry(id: UUID) throws -> Entry? {
         try writer.read { db in
             try Entry.fetchOne(db, key: id.uuidString)
@@ -201,18 +224,113 @@ public struct EntryDAO: EntryRepository {
     }
 
     public func save(_ entry: Entry) throws {
+        try save(entry, expectedContentHash: nil)
+    }
+
+    /// 乐观并发保存：expectedContentHash 非 nil 时，只有数据库仍是加载时版本才写入。
+    /// 编辑器、天气和定位等异步任务使用此入口，避免旧快照覆盖同步或用户的新编辑。
+    public func save(_ entry: Entry, expectedContentHash: String?) throws {
         var entry = entry
         entry.refreshForSave()
         try writer.write { db in
+            if let expectedContentHash,
+               let current = try Entry.fetchOne(db, key: entry.id.uuidString),
+               current.contentHash != expectedContentHash {
+                throw EntrySaveError.concurrentModification(entry.id)
+            }
             try entry.save(db)
         }
     }
 
-    func saveRemote(_ entry: Entry) throws {
-        var entry = entry
-        entry.dirty = false
+    /// 只更新后台元数据字段，并在写入前验证正文版本没有变化。
+    /// 返回 false 表示条目不存在或已被更新，调用方应放弃旧异步结果。
+    @discardableResult
+    func updateMetadata(id: UUID, expectedContentHash: String, weather: Weather?, location: GeoPlace?) throws -> Bool {
         try writer.write { db in
+            guard var current = try Entry.fetchOne(db, key: id.uuidString),
+                  current.contentHash == expectedContentHash,
+                  !current.deleted
+            else { return false }
+            current.weather = weather
+            current.location = location
+            current.refreshForSave()
+            try current.update(db)
+            return true
+        }
+    }
+
+    /// D02：在单一事务内落地远端条目（板块/日札/正文/附件元数据/基线），
+    /// 避免中途失败留下「正文在、附件记录缺」的半成品状态。
+    /// 已存在的本地附件记录优先保留——其 localPath 指向已下载的文件，不能被远端的 nil 覆盖。
+    func saveRemoteFull(entry: Entry, board: Board?, dayNote: DayNote?, mediaAssets: [MediaAsset]) throws {
+        try writer.write { db in
+            if let board, try Board.fetchOne(db, key: board.id.uuidString) == nil {
+                try board.save(db)
+            }
+            try dayNote?.save(db)
+            var entry = entry
+            entry.dirty = false
             try entry.save(db)
+            for var asset in mediaAssets {
+                guard try MediaAsset.fetchOne(db, key: asset.id.uuidString) == nil else { continue }
+                asset.localPath = nil
+                asset.thumbnailPath = nil
+                try asset.insert(db)
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO sync_baseline(entryId, hash, updatedAt)
+                VALUES (?, ?, ?)
+                ON CONFLICT(entryId) DO UPDATE SET hash = excluded.hash, updatedAt = excluded.updatedAt
+                """,
+                arguments: [entry.id.uuidString, entry.contentHash, entry.updatedAt]
+            )
+        }
+    }
+
+    /// UI-06：冲突解决——把留档副本写回为主版本或以新 ID 存为新条目。
+    /// 重算同步指纹并置 dirty=true，等待下一次推送覆盖远端；
+    /// 已存在的本地附件记录优先保留（保护已下载文件路径）。
+    func saveResolvedConflict(entry: Entry, board: Board?, dayNote: DayNote?, mediaAssets: [MediaAsset]) throws {
+        try writer.write { db in
+            if let board, try Board.fetchOne(db, key: board.id.uuidString) == nil {
+                try board.save(db)
+            }
+            try dayNote?.save(db)
+            var entry = entry
+            entry.refreshForSave()
+            var remappedMediaIDs: [UUID: UUID] = [:]
+            var normalizedAssets: [MediaAsset] = []
+            for var asset in mediaAssets {
+                // A conflict copy may be restored under a new entry ID. Enforce
+                // ownership here as well as in the UI so a caller cannot make
+                // two entries share the same media row and trigger cascade loss.
+                if asset.entryId != entry.id {
+                    let originalID = asset.id
+                    asset.id = UUID()
+                    asset.entryId = entry.id
+                    remappedMediaIDs[originalID] = asset.id
+                }
+                asset.localPath = nil
+                asset.thumbnailPath = nil
+                normalizedAssets.append(asset)
+            }
+            if !remappedMediaIDs.isEmpty {
+                entry.mediaIds = entry.mediaIds.map { remappedMediaIDs[$0] ?? $0 }
+            }
+            // UI 的“都保留”会先把资产复制成新 UUID；此时资产的 entryId
+            // 已经是新条目，无法通过 entryId 判断是否需要重映射，必须把条目
+            // 的媒体列表同步到本次实际写入的资产集合，避免继续引用旧行。
+            let suppliedMediaIDs = normalizedAssets.map(\.id)
+            if !normalizedAssets.isEmpty,
+               Set(entry.mediaIds) != Set(suppliedMediaIDs) {
+                entry.mediaIds = suppliedMediaIDs
+            }
+            try entry.save(db)
+            for asset in normalizedAssets {
+                guard try MediaAsset.fetchOne(db, key: asset.id.uuidString) == nil else { continue }
+                try asset.insert(db)
+            }
         }
     }
 
@@ -298,13 +416,144 @@ public struct EntryDAO: EntryRepository {
     func restore(id: UUID) throws {
         try writer.write { db in
             try db.execute(sql: "UPDATE entry SET deleted = 0, dirty = 1, updatedAt = ? WHERE id = ?", arguments: [Date(), id.uuidString])
+            try Self.refreshSyncHash(id: id, db: db)
         }
     }
 
     func permanentlyDelete(id: UUID) throws {
         try writer.write { db in
+            // D11：彻底删除前先落一条独立于 entry 生命周期的墓碑。
+            // 否则条目行消失后 dirtyEntries 不再包含它，删除意图无法推送到远端，
+            // 下一轮同步会被远端索引原样拉回（复活）。
+            if let entry = try Entry.fetchOne(db, key: id.uuidString) {
+                // UI-04：记录该条目引用的媒体 sha，供保留期到期后判定远端媒体是否可清。
+                let shas = try String.fetchAll(db, sql: "SELECT sha256 FROM media_asset WHERE entryId = ?", arguments: [id.uuidString])
+                let tombstone = ManifestEntry(
+                    id: entry.id,
+                    boardId: entry.boardId,
+                    dayDate: entry.dayDate,
+                    path: SyncPaths.entryPath(entry),
+                    updatedAt: entry.updatedAt,
+                    hash: entry.contentHash,
+                    deleted: true,
+                    mediaShas: shas.isEmpty ? nil : shas,
+                    deletedAt: Date()
+                )
+                let payload = try JSONEncoder.wuyan.encode(tombstone)
+                try db.execute(
+                    sql: "INSERT INTO sync_tombstone(entryId, payload, createdAt) VALUES (?, ?, ?) ON CONFLICT(entryId) DO UPDATE SET payload = excluded.payload, createdAt = excluded.createdAt",
+                    arguments: [id.uuidString, String(data: payload, encoding: .utf8), Date()]
+                )
+            }
             _ = try Entry.deleteOne(db, key: id.uuidString)
         }
+    }
+
+    /// 归档后的本地清理只移除本地副本，不代表向其它设备传播删除。
+    /// 与 permanentlyDelete 分开，避免归档把远端条目标记为 deleted。
+    func removeArchivedLocal(id: UUID) throws {
+        try writer.write { db in
+            _ = try Entry.deleteOne(db, key: id.uuidString)
+        }
+    }
+
+    // MARK: - D11：同步墓碑（独立于 entry 行的生命周期）
+
+    /// 待推送的删除墓碑（按写入顺序）。
+    func pendingTombstones() throws -> [ManifestEntry] {
+        try writer.read { db in
+            let payloads = try String.fetchAll(db, sql: "SELECT payload FROM sync_tombstone ORDER BY createdAt ASC")
+            return payloads.compactMap { payload in
+                guard let data = payload.data(using: .utf8) else { return nil }
+                return try? JSONDecoder.wuyan.decode(ManifestEntry.self, from: data)
+            }
+        }
+    }
+
+    func hasTombstone(id: UUID) throws -> Bool {
+        try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_tombstone WHERE entryId = ?", arguments: [id.uuidString]) ?? 0 > 0
+        }
+    }
+
+    /// 墓碑已传播到远端索引（remote.deleted=true）后调用；传播使命完成。
+    func dropTombstone(id: UUID) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sync_tombstone WHERE entryId = ?", arguments: [id.uuidString])
+        }
+    }
+
+    /// 超过保留期的墓碑一并丢弃，与 manifest 的墓碑裁剪保持同一水位线。
+    func pruneTombstones(olderThan cutoff: Date) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sync_tombstone WHERE createdAt < ?", arguments: [cutoff])
+        }
+    }
+
+    // MARK: - UI-06：本地冲突副本（与远端 conflicts 目录同源的本地留档）
+
+    /// 保存冲突副本（本地被替代版本的完整 envelope）。
+    func saveConflictCopy(entry: Entry, envelope: Data, remotePath: String) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT INTO conflict_copy(entryId, payload, remotePath, createdAt) VALUES (?, ?, ?, ?) ON CONFLICT(entryId) DO UPDATE SET payload = excluded.payload, remotePath = excluded.remotePath, createdAt = excluded.createdAt",
+                arguments: [entry.id.uuidString, String(data: envelope, encoding: .utf8), remotePath, Date()]
+            )
+        }
+    }
+
+    /// 全部待处理的冲突副本（按时间升序）。
+    func conflictCopies() throws -> [(entryId: UUID, envelope: EntryEnvelope, createdAt: Date)] {
+        try writer.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT entryId, payload, createdAt FROM conflict_copy ORDER BY createdAt ASC")
+            return rows.compactMap { row in
+                guard let idString: String = row["entryId"],
+                      let id = UUID(uuidString: idString),
+                      let payloadString: String = row["payload"],
+                      let data = payloadString.data(using: .utf8),
+                      let envelope = try? JSONDecoder.wuyan.decode(EntryEnvelope.self, from: data),
+                      let createdAt: Date = row["createdAt"]
+                else { return nil }
+                return (entryId: id, envelope: envelope, createdAt: createdAt)
+            }
+        }
+    }
+
+    func hasConflictCopy(id: UUID) throws -> Bool {
+        try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conflict_copy WHERE entryId = ?", arguments: [id.uuidString]) ?? 0 > 0
+        }
+    }
+
+    /// 冲突已处理（选择任一版本/都保留）后移除副本。
+    func dropConflictCopy(id: UUID) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM conflict_copy WHERE entryId = ?", arguments: [id.uuidString])
+        }
+    }
+
+    /// D06：直接 SQL 更新（软删/恢复）后重算同步指纹，
+    /// 保证 contentHash 覆盖 deleted 等全部同步语义字段，供条件确认与三方合并使用。
+    private static func refreshSyncHash(id: UUID, db: Database) throws {
+        guard let entry = try Entry.fetchOne(db, key: id.uuidString) else { return }
+        let hash = Entry.hash(
+            title: entry.title,
+            body: entry.body,
+            bodyRTF: entry.bodyRTF,
+            tags: entry.tags,
+            mood: entry.mood,
+            weather: entry.weather,
+            location: entry.location,
+            mediaIds: entry.mediaIds,
+            boardId: entry.boardId,
+            dayDate: entry.dayDate,
+            journalDate: entry.journalDate,
+            isFavorite: entry.isFavorite,
+            isDraft: entry.isDraft,
+            deleted: entry.deleted
+        )
+        guard hash != entry.contentHash else { return }
+        try db.execute(sql: "UPDATE entry SET contentHash = ? WHERE id = ?", arguments: [hash, id.uuidString])
     }
 
     func trashedEntries() throws -> [Entry] {
@@ -328,6 +577,7 @@ public struct EntryDAO: EntryRepository {
                 sql: "UPDATE entry SET deleted = 1, dirty = 1, updatedAt = ? WHERE id = ?",
                 arguments: [Date(), id.uuidString]
             )
+            try Self.refreshSyncHash(id: id, db: db)
         }
     }
 
@@ -362,18 +612,38 @@ public struct EntryDAO: EntryRepository {
     }
 
     func search(_ query: EntrySearchQuery) throws -> [EntrySearchResult] {
-        try writer.read { db in
-            // 把用户输入当作 FTS5 短语处理：转义内部引号并整体加引号，
-            // 避免 AND/OR/*/: 等被当成查询语法导致报错。
-            let phrase = "\"" + query.term.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-            var arguments: StatementArguments = [phrase]
-            var sql = """
-                SELECT entry.*, snippet(entry_fts, 0, '<mark>', '</mark>', '…', 12) AS titleSnippet,
-                       snippet(entry_fts, 1, '<mark>', '</mark>', '…', 18) AS bodySnippet
-                FROM entry_fts
-                JOIN entry ON entry_fts.rowid = entry.rowid
-                WHERE entry_fts MATCH ? AND entry.deleted = 0
-                """
+        // D15：trigram 分词器天然无法匹配少于 3 个 Unicode 字符的查询（SQLite FTS5
+        // 已说明的限制），1～2 字中文查询改走转义后的 LIKE 备选检索；
+        // ≥3 字仍用 FTS5 MATCH（用户输入按短语转义，避免 AND/OR/*/: 被当语法）。
+        let rawTerm = query.term
+        let useFallback = rawTerm.count < 3
+
+        return try writer.read { db in
+            var arguments = StatementArguments()
+            var sql: String
+            if useFallback {
+                let escaped = rawTerm
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "%", with: "\\%")
+                    .replacingOccurrences(of: "_", with: "\\_")
+                let pattern = "%\(escaped)%"
+                sql = """
+                    SELECT entry.* FROM entry
+                    WHERE entry.deleted = 0
+                      AND (entry.title LIKE ? ESCAPE '\\' OR entry.body LIKE ? ESCAPE '\\' OR entry.tags LIKE ? ESCAPE '\\')
+                    """
+                arguments += [pattern, pattern, pattern]
+            } else {
+                let phrase = "\"" + rawTerm.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+                arguments += [phrase]
+                sql = """
+                    SELECT entry.*, snippet(entry_fts, 0, '<mark>', '</mark>', '…', 12) AS titleSnippet,
+                           snippet(entry_fts, 1, '<mark>', '</mark>', '…', 18) AS bodySnippet
+                    FROM entry_fts
+                    JOIN entry ON entry_fts.rowid = entry.rowid
+                    WHERE entry_fts MATCH ? AND entry.deleted = 0
+                    """
+            }
             if let boardId = query.boardId {
                 sql += " AND entry.boardId = ?"
                 arguments += [boardId.uuidString]
@@ -395,15 +665,46 @@ public struct EntryDAO: EntryRepository {
                 sql += " AND entry.journalDate <= ?"
                 arguments += [end]
             }
-            sql += " ORDER BY rank"
+            sql += useFallback ? " ORDER BY entry.journalDate DESC" : " ORDER BY rank"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
-                EntrySearchResult(
-                    entry: try Entry(row: row),
-                    titleSnippet: row["titleSnippet"],
-                    bodySnippet: row["bodySnippet"]
+                let entry = try Entry(row: row)
+                if useFallback {
+                    return EntrySearchResult(
+                        entry: entry,
+                        titleSnippet: Self.fallbackSnippet(entry.title, term: rawTerm),
+                        bodySnippet: Self.fallbackSnippet(entry.body, term: rawTerm)
+                    )
+                }
+                // D15：标题允许 NULL，snippet(...) 相应为 NULL；必须按可空读取，
+                // 否则 GRDB 解码非可选 String 直接 fatal error（进程 signal 5），
+                // 外层 try? 捕捉不到。
+                return EntrySearchResult(
+                    entry: entry,
+                    titleSnippet: row["titleSnippet"] ?? "",
+                    bodySnippet: row["bodySnippet"] ?? ""
                 )
             }
         }
+    }
+
+    /// D15：LIKE 备选检索没有 FTS snippet 可用，手工生成与 FTS snippet 兼容的高亮片段。
+    private static func fallbackSnippet(_ text: String?, term: String, window: Int = 18) -> String {
+        guard let text, !text.isEmpty else { return "" }
+        guard let range = text.range(of: term, options: .caseInsensitive) else {
+            return String(text.prefix(window))
+        }
+        let matchStart = text.distance(from: text.startIndex, to: range.lowerBound)
+        let matchEnd = text.distance(from: text.startIndex, to: range.upperBound)
+        let lower = max(0, matchStart - window / 2)
+        let upper = min(text.count, matchEnd + window / 2)
+        func slice(_ start: Int, _ end: Int) -> String {
+            String(text[text.index(text.startIndex, offsetBy: start)..<text.index(text.startIndex, offsetBy: end)])
+        }
+        return (lower > 0 ? "…" : "")
+            + slice(lower, matchStart)
+            + "<mark>" + slice(matchStart, matchEnd) + "</mark>"
+            + slice(matchEnd, upper)
+            + (upper < text.count ? "…" : "")
     }
 }
 
@@ -423,8 +724,9 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
     var isFavorite: Bool
     var boardId: UUID
     var tags: [String]
+    var isDraft: Bool
 
-    init(id: UUID, dayDate: String, journalDate: Date, title: String?, bodyPreview: String, bodyLength: Int, isFavorite: Bool = false, boardId: UUID = UUID(), tags: [String] = []) {
+    init(id: UUID, dayDate: String, journalDate: Date, title: String?, bodyPreview: String, bodyLength: Int, isFavorite: Bool = false, boardId: UUID = UUID(), tags: [String] = [], isDraft: Bool = false) {
         self.id = id
         self.dayDate = dayDate
         self.journalDate = journalDate
@@ -434,6 +736,7 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
         self.isFavorite = isFavorite
         self.boardId = boardId
         self.tags = tags
+        self.isDraft = isDraft
     }
 
     init(row: Row) throws {
@@ -443,7 +746,7 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
         title = row["title"]
         bodyPreview = row["bodyPreview"]
         bodyLength = row["bodyLength"]
-        // isFavorite/boardId/tags 可能不在某些查询中（如旧版 timelineSummaries）
+        // isFavorite/boardId/tags/isDraft 可能不在某些查询中（如旧版 timelineSummaries）
         if row.hasColumn("isFavorite") {
             let fav: Int = row["isFavorite"]
             isFavorite = fav == 1
@@ -462,6 +765,12 @@ struct EntrySummary: Identifiable, Equatable, FetchableRecord, Sendable {
             tags = (try? JSONDecoder().decode([String].self, from: data)) ?? []
         } else {
             tags = []
+        }
+        if row.hasColumn("isDraft") {
+            let draft: Int = row["isDraft"]
+            isDraft = draft == 1
+        } else {
+            isDraft = false
         }
     }
 }

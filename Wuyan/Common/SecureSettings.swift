@@ -16,8 +16,23 @@ enum SecureSettingKey {
 }
 
 enum SecureSettings {
-    private static let keychain = Keychain()
+    /// Q01：Keychain 实例可注入。生产固定使用默认生产 Keychain；
+    /// 测试注入 testService 隔离实例，避免读写生产凭据。
+    private static var keychain: Keychain = Keychain()
+    /// Q01：legacy 凭据迁移/清理所用的 UserDefaults 同样可注入，
+    /// 保证测试容器贯穿「读取—迁移—清理」整条链路而不是只换读取端。
+    private static var defaults: UserDefaults = .standard
     private static let migrationKey = "wuyan.secureSettings.migratedToKeychain"
+
+    /// 仅测试目标可调用：注入隔离的 Keychain（如 Keychain(service: Keychain.testService)）。
+    static func injectKeychainForTesting(_ injected: Keychain) {
+        keychain = injected
+    }
+
+    /// 仅测试目标可调用：注入隔离的 UserDefaults（legacy 迁移路径使用）。
+    static func injectDefaultsForTesting(_ injected: UserDefaults) {
+        defaults = injected
+    }
 
     static func load(_ key: String, legacyDefaultsKey: String? = nil) -> String {
         // 1. 先从 Keychain 读取
@@ -27,7 +42,6 @@ enum SecureSettings {
 
         // 2. 迁移：Keychain 无值但 UserDefaults 有 → 写入 Keychain 后验证再清 defaults
         // R0-6: 先写入 Keychain，验证读回成功后才删除 UserDefaults，防止静默丢失凭据。
-        let defaults = UserDefaults.standard
         if let value = defaults.string(forKey: key), !value.isEmpty {
             if keychain.setString(value, for: key),
                let readback = keychain.string(for: key), readback == value {
@@ -58,27 +72,32 @@ enum SecureSettings {
         return ""
     }
 
-    static func save(_ value: String, for key: String, legacyDefaultsKey: String? = nil) {
+    @discardableResult
+    static func save(_ value: String, for key: String, legacyDefaultsKey: String? = nil) -> Bool {
         // R0-6: 验证 Keychain 写入成功后再清 UserDefaults
+        var persisted = false
         if value.isEmpty {
-            keychain.setString(nil, for: key)
+            persisted = keychain.setString(nil, for: key)
         } else {
-            if !keychain.setString(value, for: key) {
+            persisted = keychain.setString(value, for: key)
+            if !persisted {
                 WuyanLog.security.error("Keychain 保存失败：\(key)")
             }
         }
-        // 清掉旧的 UserDefaults 残留
-        UserDefaults.standard.removeObject(forKey: key)
-        if let legacyDefaultsKey, legacyDefaultsKey != key {
-            UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
+        // 只有钥匙串确认成功后才删除 defaults，避免保存失败时丢失旧凭据。
+        if persisted {
+            defaults.removeObject(forKey: key)
+            if let legacyDefaultsKey, legacyDefaultsKey != key {
+                defaults.removeObject(forKey: legacyDefaultsKey)
+            }
         }
+        return persisted
     }
 
     /// 一次性迁移所有凭据：把 UserDefaults 里的值写入 Keychain 并删除 defaults 条目。
     /// R0-6: legacySyncPassphrase 不再独立写入 Keychain，而是归并到 sync.passphrase。
     static func migrateAllFromDefaults() {
-        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
-        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
 
         // 优先迁移 legacySyncPassphrase → sync.passphrase（归并而非独立写入）
         if let value = defaults.string(forKey: SecureSettingKey.legacySyncPassphrase), !value.isEmpty {
@@ -104,6 +123,22 @@ enum SecureSettings {
                 }
             }
         }
-        UserDefaults.standard.set(true, forKey: migrationKey)
+        // 只有所有旧值都已迁移并清除后才记完成。钥匙串暂时不可用时保留
+        // 迁移机会，避免一次失败让凭据永久停留在旧的 UserDefaults 路径。
+        let pendingKeys = [
+            SecureSettingKey.webDAVPassword,
+            SecureSettingKey.s3SecretKey,
+            SecureSettingKey.zhipuAPIKey,
+            SecureSettingKey.claudeAPIKey,
+            SecureSettingKey.syncPassphrase,
+            SecureSettingKey.legacySyncPassphrase
+        ]
+        let hasPendingValues = pendingKeys.contains { key in
+            guard let value = defaults.string(forKey: key) else { return false }
+            return !value.isEmpty
+        }
+        if !hasPendingValues {
+            defaults.set(true, forKey: migrationKey)
+        }
     }
 }

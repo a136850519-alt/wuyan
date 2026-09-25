@@ -16,8 +16,10 @@ final class CloudAIConsentGateModel: ObservableObject {
     private var pendingAction: (() -> Void)?
 
     /// 判断是否需要拦截并弹出确认；若不需要则直接执行。
+    /// S04/UI-05：会话信任绑定到「provider + 实际目的地」——目的地变化后旧授权失效。
     func gate(appState: AppState, action: @escaping () -> Void) {
-        if appState.aiService.requiresCloudConsent, !appState.trustCloudForSession {
+        if appState.aiService.requiresCloudConsent,
+           appState.trustCloudDestination != appState.aiService.consentDestinationIdentifier {
             pendingAction = action
             showsConfirm = true
         } else {
@@ -30,7 +32,7 @@ final class CloudAIConsentGateModel: ObservableObject {
     }
 
     func trustSession(appState: AppState) {
-        appState.trustCloudForSession = true
+        appState.trustCloudDestination = appState.aiService.consentDestinationIdentifier
         pendingAction?()
         pendingAction = nil
     }
@@ -53,7 +55,8 @@ struct CloudAIConsentAlert: ViewModifier {
                 Button("信任本会话") { gate.trustSession(appState: appState) }
                 Button("仅本次") { gate.proceedOnce() }
             } message: {
-                Text("将发送日记内容到云端 AI 生成结果。")
+                // S04/UI-05：明示实际目的地与发送范围
+                Text("发送目的地：\(appState.aiService.consentDestinationIdentifier)。\n发送范围：所选条目的正文、标题、标签等文本内容；已标记「禁止云端 AI」的板块内容会被强制过滤，不会发送。")
             }
     }
 }

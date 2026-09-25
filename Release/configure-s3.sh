@@ -12,7 +12,7 @@ usage() {
 
 说明：
   - 把晤言的 S3 / MinIO 配置写入本机 defaults
-  - 把 Secret Key 写入本机 defaults（若未传 --secret-key，会交互式提示输入）
+  - 把 Secret Key 写入本机钥匙串（若未传 --secret-key，会交互式提示输入）
   - MinIO 通常使用 path-style URL，所以默认开启 Path-style URL
 
 示例：
@@ -107,10 +107,13 @@ defaults write "$APP_BUNDLE_ID" "settings.s3.accessKey" -string "$S3_ACCESS_KEY"
 defaults write "$APP_BUNDLE_ID" "settings.s3.pathStyle" -bool "$S3_PATH_STYLE"
 
 # 将 Secret Key 写入 Keychain（不再写 defaults，避免明文泄露）
-# R0-10: 添加 -A 参数允许应用进程访问。CLI 创建的 Keychain 项默认无 ACL，
-# 导致沙盒应用运行时无法读取。如需更严格控制可用 -T 指定应用路径。
-security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -A -U 2>/dev/null \
-  || security add-generic-password -a "settings.s3.secretKey" -s "com.wuyan.app" -w "$S3_SECRET_KEY" -A
+# 不使用 -A（允许所有应用访问）。钥匙串会按当前用户的访问控制处理首次读取；
+# 如需预先信任已安装的应用，可传 KEYCHAIN_TRUSTED_APP 指向应用可执行文件。
+KEYCHAIN_ARGS=(-a "settings.s3.secretKey" -s "com.wuyan.app" -U)
+if [[ -n "${KEYCHAIN_TRUSTED_APP:-}" ]]; then
+  KEYCHAIN_ARGS+=(-T "$KEYCHAIN_TRUSTED_APP")
+fi
+security add-generic-password "${KEYCHAIN_ARGS[@]}" -w "$S3_SECRET_KEY"
 
 echo "已写入晤言 S3 / MinIO 配置："
 echo "  Bundle ID: $APP_BUNDLE_ID"

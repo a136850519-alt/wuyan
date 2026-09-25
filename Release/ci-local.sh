@@ -20,12 +20,13 @@ step() {
 
 ok() {
   echo -e "${GREEN}  ✓ $1${NC}"
-  ((pass++))
+  # Q02：((pass++)) 在计数器为 0 时返回退出码 1，set -e 下首次调用即整体退出。
+  pass=$((pass + 1))
 }
 
 err() {
   echo -e "${RED}  ✗ $1${NC}"
-  ((fail++))
+  fail=$((fail + 1))
 }
 
 # ── 1. swift build ──
@@ -38,13 +39,19 @@ fi
 
 # ── 2. swift test (如果可用) ──
 SKIP_TEST="${2:-}"
-if [[ "$1" != "--skip-test" && "$SKIP_TEST" != "--skip-test" ]]; then
+if [[ "${1:-}" != "--skip-test" && "$SKIP_TEST" != "--skip-test" ]]; then
   step "swift test"
+  # Q01：测试必须与用户环境隔离。WUYAN_MEDIA_ROOT 强制把媒体根指向 CI 临时
+  # 目录，防止测试经 LocalMediaStore 读写真实的 Application Support 媒体库；
+  # UserDefaults/Keychain 隔离由测试自身注入（AppSettings/SecureSettings 测试注入点）。
+  WUYAN_TEST_MEDIA_ROOT="${WUYAN_TEST_MEDIA_ROOT:-$(mktemp -d /tmp/wuyan-ci-media.XXXXXX)}"
+  export WUYAN_MEDIA_ROOT="$WUYAN_TEST_MEDIA_ROOT"
+  echo "  媒体根（隔离）：$WUYAN_MEDIA_ROOT"
   if swift test 2>&1; then
     ok "测试全部通过"
   else
-    # SPM CLI 可能没有 XCTest，不当作硬失败
-    echo -e "${YELLOW}  ⚠ swift test 未通过（SPM CLI 可能缺少 XCTest）${NC}"
+    # Q02：测试失败必须计入失败并阻断 CI，不能当作黄色警告放行。
+    err "swift test 未通过"
   fi
 else
   echo "  跳过测试 (--skip-test)"

@@ -69,7 +69,13 @@ public struct Entry: Identifiable, Codable, Equatable, FetchableRecord, Persista
             mood: mood,
             weather: weather,
             location: location,
-            mediaIds: mediaIds
+            mediaIds: mediaIds,
+            boardId: boardId,
+            dayDate: dayDate,
+            journalDate: journalDate,
+            isFavorite: isFavorite,
+            isDraft: isDraft,
+            deleted: deleted
         ) : contentHash
         self.dirty = dirty
         self.deleted = deleted
@@ -83,7 +89,13 @@ public struct Entry: Identifiable, Codable, Equatable, FetchableRecord, Persista
         mood: Int?,
         weather: Weather?,
         location: GeoPlace?,
-        mediaIds: [UUID]
+        mediaIds: [UUID],
+        boardId: UUID? = nil,
+        dayDate: String? = nil,
+        journalDate: Date? = nil,
+        isFavorite: Bool = false,
+        isDraft: Bool = false,
+        deleted: Bool = false
     ) -> String {
         Hashing.entryContentHash(
             title: title,
@@ -93,7 +105,13 @@ public struct Entry: Identifiable, Codable, Equatable, FetchableRecord, Persista
             mood: mood,
             weather: weather,
             location: location,
-            mediaIds: mediaIds
+            mediaIds: mediaIds,
+            boardId: boardId,
+            dayDate: dayDate,
+            journalDate: journalDate,
+            isFavorite: isFavorite,
+            isDraft: isDraft,
+            deleted: deleted
         )
     }
 
@@ -110,7 +128,13 @@ public struct Entry: Identifiable, Codable, Equatable, FetchableRecord, Persista
             mood: mood,
             weather: weather,
             location: location,
-            mediaIds: mediaIds
+            mediaIds: mediaIds,
+            boardId: boardId,
+            dayDate: dayDate,
+            journalDate: journalDate,
+            isFavorite: isFavorite,
+            isDraft: isDraft,
+            deleted: deleted
         )
     }
 }

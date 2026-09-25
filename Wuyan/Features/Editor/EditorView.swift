@@ -80,6 +80,11 @@ struct EditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .wuyanWillTerminate)) { _ in
             viewModel.flushIfNeeded(appState: appState)
         }
+        .onDisappear {
+            // 切到设置、日历或其它窗口时也要落盘最后一段输入，不能只依赖
+            // 进程退出通知；视图移除本身不会触发保存任务完成。
+            viewModel.flushIfNeeded(appState: appState)
+        }
     }
 
     private var writingPane: some View {
@@ -396,8 +401,14 @@ struct EditorView: View {
 
     private func toggleRecording() {
         do {
-            if let url = try appState.audioRecorder.toggle() {
-                viewModel.importMedia(urls: [url], appState: appState)
+            // UI-09③：录音导入到「录音开始时绑定的条目」，与停止时正在编辑哪条无关。
+            if let recording = try appState.audioRecorder.toggle(for: viewModel.entry?.id) {
+                viewModel.importMedia(
+                    urls: [recording.url],
+                    appState: appState,
+                    entryId: recording.entryId,
+                    cleanupAfterImport: [recording.url]
+                )
             }
         } catch {
             appState.errorMessage = error.localizedDescription

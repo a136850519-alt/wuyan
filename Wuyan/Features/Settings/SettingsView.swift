@@ -24,7 +24,11 @@ struct SettingsView: View {
     @AppStorage(SettingKey.reminderEnabled) private var reminderEnabled = false
     @AppStorage(SettingKey.reminderSkipWrittenDays) private var skipWrittenDays = true
     @AppStorage(SettingKey.metadataEnabled) private var metadataEnabled = true
-    @AppStorage(SettingKey.cryptoEnabled) private var cryptoEnabled = false
+    // UI-01（已确认）：加密开关不再即时生效，改为草稿状态、点「保存加密设置」才应用
+    @State private var cryptoEnabledDraft = false
+    @State private var showsDisableCryptoConfirm = false
+    @State private var showsConflictList = false
+    @State private var pendingRestoreDirectory: URL?
     @State private var webDAVPassword = ""
     @State private var s3SecretKey = ""
     @State private var zhipuAPIKey = ""
@@ -148,10 +152,13 @@ struct SettingsView: View {
                             }
                             .buttonStyle(.link)
                         }
-                        Text("冲突副本保存在 NAS 的 /Wuyan/entries/conflicts/ 目录下。")
+                        Text("冲突副本保存在 NAS 的 /Wuyan/entries/conflicts/ 目录下，并已留档本地。")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
+                }
+                Button("冲突列表（查看本地留档副本并恢复）") {
+                    showsConflictList = true
                 }
             }
 
@@ -257,17 +264,25 @@ struct SettingsView: View {
             }
 
             Section("导出与备份") {
-                Button("导出 Markdown / JSON / PDF") {
+                // UI-03（已确认）：完整备份与阅读导出分离
+                Button("创建完整备份（含媒体文件，可独立恢复）") {
+                    exportFullBackup()
+                }
+                Button("从完整备份还原…") {
+                    pickFullBackupForRestore()
+                }
+                Divider()
+                Button("导出 Markdown / JSON / PDF（阅读用）") {
                     exportAll()
                 }
-                Button("从 JSON 备份还原") {
+                Button("从 JSON 备份还原（旧格式）") {
                     importJSONBackup()
                 }
                 sectionStatus(for: StatusSection.export)
             }
 
             Section("加密") {
-                Toggle("远端同步加密", isOn: $cryptoEnabled)
+                Toggle("远端同步加密（点保存后生效）", isOn: $cryptoEnabledDraft)
                     .tint(Palette.cinnabar)
                 SecureField("同步加密口令", text: $cryptoPassphrase)
                 SecureField("再次输入口令", text: $cryptoConfirm)
@@ -275,9 +290,29 @@ struct SettingsView: View {
                     saveCryptoSettings()
                 }
                 sectionStatus(for: StatusSection.crypto)
-                Text("开启后新上传到远端的条目、daynote、manifest 与媒体会加密；丢失口令无法恢复。")
+                if AppSettings.cryptoEnabled {
+                    // UI-01（已确认）：数据密钥协议说明
+                    Text("加密已启用（数据密钥协议）。更换口令只重新包装数据密钥，秒级完成、数据无需重传；关闭加密会把远端全部数据迁移为明文。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("日记数据由随机数据密钥加密，口令只负责保护该密钥；丢失口令仍无法解密。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .confirmationDialog("关闭加密并迁移远端为明文？", isPresented: $showsDisableCryptoConfirm) {
+                Button("关闭加密并迁移", role: .destructive) {
+                    cryptoEnabledDraft = false
+                    setStatus(StatusSection.crypto, "正在迁移远端数据为明文…")
+                    appState.syncCoordinator.disableEncryptionMigration { message in
+                        setStatus(StatusSection.crypto, message)
+                    }
+                }
+                Button("取消", role: .cancel) {
+                    cryptoEnabledDraft = AppSettings.cryptoEnabled
+                }
+            } message: {
+                Text("将把远端全部加密对象下载并以明文重传，耗时取决于数据量；迁移失败时加密配置保持不变。期间请保持网络连接。")
             }
 
             Section("媒体磁盘") {
@@ -322,6 +357,7 @@ struct SettingsView: View {
         .navigationTitle("设置")
         .onAppear {
             loadSecureSettings()
+            cryptoEnabledDraft = AppSettings.cryptoEnabled
             loadBabyBirthday()
             if reminderTimes.isEmpty {
                 reminderTimes = AppState.reminderDatesFromDefaults()
@@ -335,6 +371,26 @@ struct SettingsView: View {
         }
         .onChange(of: appState.syncConflicts) {
             loadConflictSummaries()
+        }
+        .confirmationDialog("还原策略", isPresented: Binding(
+            get: { pendingRestoreDirectory != nil },
+            set: { if !$0 { pendingRestoreDirectory = nil } }
+        )) {
+            Button("覆盖同 ID 条目（以备份为准）", role: .destructive) {
+                runRestore(.overwrite)
+            }
+            Button("跳过已存在的条目") {
+                runRestore(.skipExisting)
+            }
+            Button("取消", role: .cancel) {
+                pendingRestoreDirectory = nil
+            }
+        } message: {
+            Text("还原前会自动快照当前数据库；备份包校验失败时原库不变。")
+        }
+        .sheet(isPresented: $showsConflictList) {
+            ConflictListView()
+                .environmentObject(appState)
         }
     }
 
@@ -385,7 +441,7 @@ struct SettingsView: View {
 
     private func testStorage() {
         guard !isTestingStorage else { return }
-        saveStorageSettings(showMessage: false)
+        guard saveStorageSettings(showMessage: false) else { return }
         setStatus(StatusSection.storage, "正在测试连接…")
         isTestingStorage = true
 
@@ -413,7 +469,8 @@ struct SettingsView: View {
         }
     }
 
-    private func saveStorageSettings(showMessage: Bool = true) {
+    @discardableResult
+    private func saveStorageSettings(showMessage: Bool = true) -> Bool {
         webDAVBaseURL = webDAVBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         webDAVUsername = webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         s3Endpoint = s3Endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -422,14 +479,21 @@ struct SettingsView: View {
         s3AccessKey = s3AccessKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if storageBackend == "s3" {
-            SecureSettings.save(s3SecretKey, for: SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey)
+            guard SecureSettings.save(s3SecretKey, for: SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey) else {
+                setStatus(StatusSection.storage, "Secret Key 无法保存到钥匙串，配置未生效。")
+                return false
+            }
         } else {
-            SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
+            guard SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword) else {
+                setStatus(StatusSection.storage, "密码无法保存到钥匙串，配置未生效。")
+                return false
+            }
         }
 
         if showMessage {
             setStatus(StatusSection.storage, "存储配置已保存。")
         }
+        return true
     }
 
     private func exportAll() {
@@ -466,6 +530,52 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - UI-03：完整备份
+
+    private func exportFullBackup() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择备份位置"
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        do {
+            let target = directory.appendingPathComponent("晤言完整备份-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+            let count = try ExportService().exportFullBackupPackage(database: appState.db, to: target)
+            setStatus(StatusSection.export, "完整备份已创建（\(count) 篇，含媒体文件）：\(target.lastPathComponent)")
+        } catch {
+            setStatus(StatusSection.export, error.localizedDescription)
+        }
+    }
+
+    private func pickFullBackupForRestore() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "选择备份包目录"
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        pendingRestoreDirectory = directory
+    }
+
+    private func runRestore(_ strategy: ImportConflictStrategy) {
+        guard let directory = pendingRestoreDirectory else { return }
+        pendingRestoreDirectory = nil
+        do {
+            let report = try ExportService().importFullBackupPackage(
+                from: directory,
+                database: appState.db,
+                mediaStore: appState.mediaStore,
+                strategy: strategy
+            )
+            setStatus(
+                StatusSection.export,
+                "已导入 \(report.importedEntries) 篇（跳过已存在 \(report.skippedEntries) 篇），恢复媒体 \(report.restoredMediaFiles) 个，缺失本地副本 \(report.missingLocalCopies) 个（可从远端补）。还原前快照：\(report.snapshotURL.lastPathComponent)"
+            )
+        } catch {
+            setStatus(StatusSection.export, error.localizedDescription)
+        }
+    }
+
     private func saveReminder() {
         Task {
             let scheduler = ReminderScheduler()
@@ -490,6 +600,10 @@ struct SettingsView: View {
     }
 
     private func saveBabyBirthday() {
+        guard !appState.isRescueMode else {
+            setStatus(StatusSection.baby, "救援模式：设置修改已禁用。")
+            return
+        }
         do {
             guard let board = growthBoard() else {
                 setStatus(StatusSection.baby, "没有找到宝贝成长记录板块。")
@@ -507,6 +621,7 @@ struct SettingsView: View {
                 createdAt: board.createdAt
             )
             try appState.boards.save(updated)
+            appState.syncCoordinator.notifyEditCompleted()
             setStatus(StatusSection.baby, "宝贝生日已保存。")
         } catch {
             setStatus(StatusSection.baby, error.localizedDescription)
@@ -514,7 +629,7 @@ struct SettingsView: View {
     }
 
     private func checkAIHealth() {
-        saveAISettings(showMessage: false)
+        guard saveAISettings(showMessage: false) else { return }
         appState.reloadAISettings()
         setStatus(StatusSection.ai, "正在测试连接…")
         isTestingAI = true
@@ -538,7 +653,8 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAISettings(showMessage: Bool = true) {
+    @discardableResult
+    private func saveAISettings(showMessage: Bool = true) -> Bool {
         zhipuEndpoint = zhipuEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         zhipuModel = zhipuModel.trimmingCharacters(in: .whitespacesAndNewlines)
         claudeEndpoint = claudeEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -548,9 +664,15 @@ struct SettingsView: View {
 
         switch aiProvider {
         case "zhipu":
-            SecureSettings.save(zhipuAPIKey, for: SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey)
+            guard SecureSettings.save(zhipuAPIKey, for: SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey) else {
+                setStatus(StatusSection.ai, "智谱 API Key 无法保存到钥匙串，配置未生效。")
+                return false
+            }
         case "claude":
-            SecureSettings.save(claudeAPIKey, for: SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey)
+            guard SecureSettings.save(claudeAPIKey, for: SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey) else {
+                setStatus(StatusSection.ai, "Claude API Key 无法保存到钥匙串，配置未生效。")
+                return false
+            }
         default:
             break
         }
@@ -559,19 +681,53 @@ struct SettingsView: View {
         if showMessage {
             setStatus(StatusSection.ai, "AI 配置已保存。")
         }
+        return true
     }
 
     private func saveCryptoSettings() {
-        if cryptoPassphrase.isEmpty {
-            setStatus(StatusSection.crypto, cryptoEnabled ? "加密已开启；未填写新口令，已保留现有口令。" : "加密已关闭。")
+        // UI-01（已确认）：护栏——开关提交生效、开启必须非空口令且两次一致、
+        // 换口令走数据密钥重包装协议（旧口令验证失败或迁移失败时不覆盖旧口令）。
+        let stored = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
+
+        if cryptoEnabledDraft {
+            guard !cryptoPassphrase.isEmpty else {
+                setStatus(StatusSection.crypto, "开启加密需要填写同步口令。")
+                return
+            }
+            guard cryptoPassphrase == cryptoConfirm else {
+                setStatus(StatusSection.crypto, "两次输入的口令不一致。")
+                return
+            }
+        }
+
+        if !cryptoEnabledDraft, AppSettings.cryptoEnabled {
+            // 关闭加密：必须走迁移流程（远端密文全部转明文），由确认对话框触发
+            showsDisableCryptoConfirm = true
             return
         }
-        guard cryptoPassphrase == cryptoConfirm || cryptoConfirm.isEmpty else {
-            setStatus(StatusSection.crypto, "两次口令不一致。")
+
+        if !cryptoPassphrase.isEmpty, cryptoPassphrase != stored, !stored.isEmpty {
+            // 换口令：远端已有加密数据——重包装数据密钥，成功后才写入新口令
+            guard cryptoPassphrase == cryptoConfirm else {
+                setStatus(StatusSection.crypto, "更换口令需要再次输入新口令确认。")
+                return
+            }
+            setStatus(StatusSection.crypto, "正在更换口令…")
+            appState.syncCoordinator.changeCryptoPassphrase(currentPassphrase: stored, newPassphrase: cryptoPassphrase) { message in
+                self.setStatus(StatusSection.crypto, message)
+            }
             return
         }
-        SecureSettings.save(cryptoPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
-        setStatus(StatusSection.crypto, cryptoEnabled ? "加密设置已保存。请牢记口令。" : "加密已关闭。")
+
+        // 其余情况：首次设置口令或口令未变化
+        if !cryptoPassphrase.isEmpty {
+            guard SecureSettings.save(cryptoPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase) else {
+                setStatus(StatusSection.crypto, "口令无法保存到钥匙串，加密设置未生效。")
+                return
+            }
+        }
+        UserDefaults.standard.set(cryptoEnabledDraft, forKey: SettingKey.cryptoEnabled)
+        setStatus(StatusSection.crypto, cryptoEnabledDraft ? "加密设置已保存，将在下次同步时生效。请牢记口令。" : "加密已关闭。")
     }
 
     private func evictYearMedia(year: Int) {

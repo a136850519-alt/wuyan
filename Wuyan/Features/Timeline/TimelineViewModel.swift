@@ -5,6 +5,8 @@ final class TimelineViewModel: ObservableObject {
     @Published var summaries: [EntrySummary] = []
     @Published var searchResults: [EntrySummary] = []
     @Published var isSearching = false
+    /// UI-08③：搜索失败原因。nil 表示正常；非 nil 时界面显示错误而非「无结果」。
+    @Published var searchError: String?
 
     private var observationTask: Task<Void, Never>?
 
@@ -28,8 +30,10 @@ final class TimelineViewModel: ObservableObject {
             filter = .board(id)
         case let .year(year):
             filter = .year(year)
-        case let .yearBoard(year, _):
-            filter = .year(year)
+        case let .yearBoard(year, boardId):
+            // UI-08②（已确认）：「某年 + 某板块」严格过滤该板块该年份，
+            // 不再错误地把板块条件丢掉显示全年。
+            filter = .yearBoard(year, boardId)
         case .calendar, .settings, .trash:
             filter = .all
         }
@@ -47,34 +51,44 @@ final class TimelineViewModel: ObservableObject {
         }
     }
 
-    /// 使用 FTS5 trigram 执行全文搜索
+    /// 使用 FTS5 trigram 执行全文搜索（<3 字自动走 LIKE 回退，见 EntryDAO.search）
     func search(query: String, appState: AppState) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             searchResults = []
             isSearching = false
+            searchError = nil
             return
         }
         isSearching = true
-        let results = (try? appState.entries.search(EntrySearchQuery(term: trimmed))) ?? []
-        searchResults = results.map { result in
-            EntrySummary(
-                id: result.entry.id,
-                dayDate: result.entry.dayDate,
-                journalDate: result.entry.journalDate,
-                title: result.entry.title,
-                bodyPreview: result.bodySnippet.strippingHTMLMarks,
-                bodyLength: result.entry.body.count,
-                isFavorite: result.entry.isFavorite,
-                boardId: result.entry.boardId,
-                tags: result.entry.tags
-            )
+        do {
+            let results = try appState.entries.search(EntrySearchQuery(term: trimmed))
+            // UI-08③：数据库错误明确报出，不再 try? 伪装成「无结果」
+            searchError = nil
+            searchResults = results.map { result in
+                EntrySummary(
+                    id: result.entry.id,
+                    dayDate: result.entry.dayDate,
+                    journalDate: result.entry.journalDate,
+                    title: result.entry.title,
+                    bodyPreview: result.bodySnippet.strippingHTMLMarks,
+                    bodyLength: result.entry.body.count,
+                    isFavorite: result.entry.isFavorite,
+                    boardId: result.entry.boardId,
+                    tags: result.entry.tags,
+                    isDraft: result.entry.isDraft
+                )
+            }
+        } catch {
+            searchResults = []
+            searchError = error.localizedDescription
         }
     }
 
     func clearSearch() {
         searchResults = []
         isSearching = false
+        searchError = nil
     }
 
     var days: [TimelineDay] {

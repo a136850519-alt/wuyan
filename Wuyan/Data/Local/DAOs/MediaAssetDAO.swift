@@ -57,27 +57,37 @@ struct MediaAssetDAO {
         }
     }
 
-    /// 本机已确认上传到远端的媒体路径集合（sync_uploaded 表）。命中即跳过 exists 探测。
-    func uploadedPaths() throws -> Set<String> {
+    /// 本机已确认上传到远端的媒体路径集合（sync_upload_cache 表），按后端身份隔离。
+    /// D08：命中即跳过 exists 探测；缓存绝不能跨后端/账号/数据集沿用，
+    /// 否则切到空后端会误判「已上传」而漏传媒体。
+    func uploadedPaths(backend: String) throws -> Set<String> {
         try writer.read { db in
-            let rows = try String.fetchAll(db, sql: "SELECT path FROM sync_uploaded")
+            let rows = try String.fetchAll(
+                db,
+                sql: "SELECT path FROM sync_upload_cache WHERE backend = ?",
+                arguments: [backend]
+            )
             return Set(rows)
         }
     }
 
-    /// 批量记录本次同步新上传的路径；INSERT OR IGNORE 保证幂等。
-    func recordUploaded(paths: [String]) throws {
+    /// 批量记录本次同步新上传的路径（限定后端身份）；INSERT OR IGNORE 保证幂等。
+    func recordUploaded(paths: [String], backend: String) throws {
         guard !paths.isEmpty else { return }
         try writer.write { db in
             for path in paths {
-                try db.execute(sql: "INSERT OR IGNORE INTO sync_uploaded(path) VALUES (?)", arguments: [path])
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO sync_upload_cache(backend, path) VALUES (?, ?)",
+                    arguments: [backend, path]
+                )
             }
         }
     }
 
     /// 迁移：将 localPath / thumbnailPath 从绝对路径转换为相对路径。
-    /// converter 闭包接收绝对路径，返回转换后的相对路径（无法转换时返回原路径）。
-    func migratePathsToRelative(converter: (String) -> String) throws {
+    /// converter 闭包接收绝对路径，返回转换后的相对路径；无法安全转换时返回 nil，
+    /// 让数据库清空该本地副本引用，避免继续访问越界路径。
+    func migratePathsToRelative(converter: (String) -> String?) throws {
         try writer.write { db in
             // 逐行读取并转换，只更新有值的行
             let rows = try Row.fetchAll(db, sql: "SELECT id, localPath, thumbnailPath FROM media_asset WHERE localPath IS NOT NULL OR thumbnailPath IS NOT NULL")
@@ -88,16 +98,20 @@ struct MediaAssetDAO {
 
                 if let localPath: String = row["localPath"] {
                     let converted = converter(localPath)
-                    if converted != localPath {
+                    if let converted, converted != localPath {
                         updates.append("localPath = ?")
                         args.append(converted)
+                    } else if converted == nil {
+                        updates.append("localPath = NULL")
                     }
                 }
                 if let thumbnailPath: String = row["thumbnailPath"] {
                     let converted = converter(thumbnailPath)
-                    if converted != thumbnailPath {
+                    if let converted, converted != thumbnailPath {
                         updates.append("thumbnailPath = ?")
                         args.append(converted)
+                    } else if converted == nil {
+                        updates.append("thumbnailPath = NULL")
                     }
                 }
                 if !updates.isEmpty {

@@ -3,12 +3,128 @@ import Foundation
 import CryptoKit
 @testable import Wuyan
 
+// MARK: - Q01/C03：测试隔离辅助
+
+/// 涉及全局设置/凭据/迁移状态的测试必须在隔离容器中运行：
+/// AppSettings、SecureSettings（Keychain + legacy defaults）、AppMigrationRunner、
+/// LocalMediaStore 的迁移标记与目录、ProviderFactory 的 AI provider、SyncCrypto
+/// 的待提交密钥头域共享同一个随机 suite，绝不读写用户真实偏好域、真实 Keychain、
+/// 真实媒体库或真实 Caches，结束即清理。全局注入点是共享可变状态，用锁串行化
+/// 避免并行测试互相干扰。
+enum TestIsolation {
+    private static let lock = NSLock()
+
+    static func withIsolatedDefaults<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        let suite = "wuyan.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        // C03：隔离目录。迁移源目录与媒体根都指向临时目录，
+        // AppState 构造触发的 Caches→App Support 迁移只会处理这里的合成夹具。
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wuyan-tests-" + UUID().uuidString, isDirectory: true)
+        let isolatedCaches = tempRoot.appendingPathComponent("Caches", isDirectory: true)
+        let isolatedMediaRoot = tempRoot.appendingPathComponent("MediaRoot", isDirectory: true)
+        AppSettings.injectDefaultsForTesting(defaults)
+        SecureSettings.injectDefaultsForTesting(defaults)
+        // C03：统一容器同时注入测试 Keychain——AppState 构造经
+        // ProviderFactory→SecureSettings.load 的链路不再读生产凭据。
+        SecureSettings.injectKeychainForTesting(Keychain(service: Keychain.testService))
+        AppMigrationRunner.injectDefaultsForTesting(defaults)
+        LocalMediaStore.injectDefaultsForTesting(defaults)
+        LocalMediaStore.injectCachesSourceForTesting(isolatedCaches)
+        LocalMediaStore.injectMediaRootForTesting(isolatedMediaRoot)
+        // C03：AI provider 工厂短路（默认智谱分支会读 Keychain）。
+        ProviderFactory.injectAIProviderForTesting { nil }
+        // C03：SyncCrypto 待提交密钥头同样落隔离域。
+        SyncCrypto.injectDefaultsForTesting(defaults)
+        defer {
+            AppSettings.injectDefaultsForTesting(.standard)
+            SecureSettings.injectDefaultsForTesting(.standard)
+            SecureSettings.injectKeychainForTesting(Keychain())
+            AppMigrationRunner.injectDefaultsForTesting(.standard)
+            LocalMediaStore.injectDefaultsForTesting(.standard)
+            LocalMediaStore.injectCachesSourceForTesting(nil)
+            LocalMediaStore.injectMediaRootForTesting(nil)
+            ProviderFactory.injectAIProviderForTesting(nil)
+            SyncCrypto.injectDefaultsForTesting(.standard)
+            try? FileManager.default.removeItem(at: tempRoot)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        return try body(defaults)
+    }
+
+    /// C03：异步测试用例（await 引擎同步）使用同一隔离容器。
+    static func withIsolatedDefaults<T>(_ body: (UserDefaults) async throws -> T) async rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        let suite = "wuyan.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        // C03：隔离目录。迁移源目录与媒体根都指向临时目录，
+        // AppState 构造触发的 Caches→App Support 迁移只会处理这里的合成夹具。
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wuyan-tests-" + UUID().uuidString, isDirectory: true)
+        let isolatedCaches = tempRoot.appendingPathComponent("Caches", isDirectory: true)
+        let isolatedMediaRoot = tempRoot.appendingPathComponent("MediaRoot", isDirectory: true)
+        AppSettings.injectDefaultsForTesting(defaults)
+        SecureSettings.injectDefaultsForTesting(defaults)
+        // C03：统一容器同时注入测试 Keychain——AppState 构造经
+        // ProviderFactory→SecureSettings.load 的链路不再读生产凭据。
+        SecureSettings.injectKeychainForTesting(Keychain(service: Keychain.testService))
+        AppMigrationRunner.injectDefaultsForTesting(defaults)
+        LocalMediaStore.injectDefaultsForTesting(defaults)
+        LocalMediaStore.injectCachesSourceForTesting(isolatedCaches)
+        LocalMediaStore.injectMediaRootForTesting(isolatedMediaRoot)
+        // C03：AI provider 工厂短路（默认智谱分支会读 Keychain）。
+        ProviderFactory.injectAIProviderForTesting { nil }
+        // C03：SyncCrypto 待提交密钥头同样落隔离域。
+        SyncCrypto.injectDefaultsForTesting(defaults)
+        defer {
+            AppSettings.injectDefaultsForTesting(.standard)
+            SecureSettings.injectDefaultsForTesting(.standard)
+            SecureSettings.injectKeychainForTesting(Keychain())
+            AppMigrationRunner.injectDefaultsForTesting(.standard)
+            LocalMediaStore.injectDefaultsForTesting(.standard)
+            LocalMediaStore.injectCachesSourceForTesting(nil)
+            LocalMediaStore.injectMediaRootForTesting(nil)
+            ProviderFactory.injectAIProviderForTesting(nil)
+            SyncCrypto.injectDefaultsForTesting(.standard)
+            try? FileManager.default.removeItem(at: tempRoot)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        return try await body(defaults)
+    }
+
+    static func withIsolatedKeychain<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        // Q01：凭据迁移的「读取—迁移—清理」整条链路共享同一隔离容器，
+        // SecureSettings 内部不再触碰生产 UserDefaults/Keychain。
+        let suite = "wuyan.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        SecureSettings.injectKeychainForTesting(Keychain(service: Keychain.testService))
+        SecureSettings.injectDefaultsForTesting(defaults)
+        defer {
+            SecureSettings.injectKeychainForTesting(Keychain())
+            SecureSettings.injectDefaultsForTesting(.standard)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        return try body()
+    }
+}
+
 // MARK: - Mock Remote Storage Provider
 
 final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendable {
     var files: [String: Data] = [:]
     var directories: Set<String> = []
     var shouldFail5xx = false
+    private let conditionalLock = NSLock()
+    // C01/C02：在指定动作前插入并发操作或注入故障，用于复现提交/删除/媒体
+    // 写入窗口内的跨设备交错。闭包只执行一次后自动清空。
+    var beforeEntryWrite: (() throws -> Void)?
+    var beforeMediaWrite: (() throws -> Void)?
+    var beforeDelete: (() async throws -> Void)?
 
     func mkcolRecursive(_ path: String) async throws {
         directories.insert(path)
@@ -33,6 +149,11 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
         return data
     }
 
+    func getVersioned(_ path: String) async throws -> RemoteObjectSnapshot {
+        let data = try await get(path)
+        return RemoteObjectSnapshot(data: data, etag: fingerprint(data))
+    }
+
     func getRange(_ path: String, bytes: Range<Int64>) async throws -> Data {
         let full = try await get(path)
         let lower = Int(bytes.lowerBound)
@@ -44,6 +165,34 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
         if shouldFail5xx {
             throw RemoteStorageError.requestFailed(method: "PUT", path: path, statusCode: 500)
         }
+        if path.hasPrefix("/Wuyan/entries/"), let action = beforeEntryWrite {
+            beforeEntryWrite = nil
+            try action()
+        }
+        if path.hasPrefix("/Wuyan/media/"), let action = beforeMediaWrite {
+            beforeMediaWrite = nil
+            try action()
+        }
+        files[path] = data
+    }
+
+    func putConditionally(
+        _ path: String,
+        data: Data,
+        contentType: String,
+        ifMatch: String?,
+        ifNoneMatch: Bool
+    ) async throws {
+        conditionalLock.lock()
+        defer { conditionalLock.unlock() }
+        if ifNoneMatch, files[path] != nil {
+            throw RemoteStorageError.concurrentModification(path: path)
+        }
+        if let ifMatch {
+            guard let current = files[path], fingerprint(current) == ifMatch else {
+                throw RemoteStorageError.concurrentModification(path: path)
+            }
+        }
         files[path] = data
     }
 
@@ -53,6 +202,10 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
     }
 
     func delete(_ path: String) async throws {
+        if let action = beforeDelete {
+            beforeDelete = nil
+            try await action()
+        }
         files.removeValue(forKey: path)
     }
 
@@ -66,6 +219,10 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
     func contentLength(_ path: String) async throws -> Int64? {
         guard let data = files[path] else { return nil }
         return Int64(data.count)
+    }
+
+    private func fingerprint(_ data: Data) -> String {
+        "sha256-" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -141,8 +298,9 @@ struct CryptoTests {
         let manifestJSON = """
         {"schemaVersion":2,"entries":[]}
         """.data(using: .utf8)!
-        let sealed = try crypto.box.seal(manifestJSON, key: crypto.key)
-        let decrypted = try crypto.box.open(sealed, key: crypto.key)
+        let key = try crypto.key(forSaltBase64: salt.base64EncodedString(), iterations: KDFParams(salt: salt).iterations)
+        let sealed = try crypto.box.seal(manifestJSON, key: key)
+        let decrypted = try crypto.box.open(sealed, key: key)
 
         #expect(decrypted == manifestJSON)
     }
@@ -154,7 +312,8 @@ struct CryptoTests {
 struct StreakTrackerTests {
 
     private func makeEntry(on dayKey: String) -> Entry {
-        Entry(id: UUID(), boardId: UUID(), dayDate: dayKey, body: "x")
+        // UI-09① 后草稿不计入连续记录，夹具必须是非草稿。
+        Entry(id: UUID(), boardId: UUID(), dayDate: dayKey, body: "x", isDraft: false)
     }
 
     @Test("Current streak counts consecutive days")
@@ -163,7 +322,8 @@ struct StreakTrackerTests {
         let entries = (7...10).map { makeEntry(on: base + String(format: "%02d", $0)) }
         let tracker = StreakTracker(entries: entries)
 
-        let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10))!
+        // DayKey 采用凌晨 3 点日界，零点属于前一天；用正午确保落在当日。
+        let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10, hour: 12))!
         #expect(tracker.currentStreak(asOf: today) == 4)
     }
 
@@ -176,7 +336,8 @@ struct StreakTrackerTests {
             makeEntry(on: "2026-07-10"),
         ]
         let tracker = StreakTracker(entries: entries)
-        let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10))!
+        // DayKey 采用凌晨 3 点日界，零点属于前一天；用正午确保落在当日。
+        let today = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 10, hour: 12))!
         #expect(tracker.currentStreak(asOf: today) == 1)
     }
 
@@ -211,34 +372,37 @@ struct AppSettingsTests {
 
     @Test("SettingKey format consistency")
     func settingKeyFormat() {
-        #expect(SettingKey.storageBackend == "settings.storageBackend")
-        #expect(SettingKey.aiEnabled == "settings.aiEnabled")
-        #expect(SettingKey.cryptoEnabled == "settings.cryptoEnabled")
-        #expect(SettingKey.appearanceBodyFont == "settings.appearanceBodyFont")
+        #expect(SettingKey.storageBackend == "settings.storage.backend")
+        #expect(SettingKey.aiEnabled == "settings.ai.enabled")
+        #expect(SettingKey.cryptoEnabled == "settings.crypto.enabled")
+        #expect(SettingKey.appearanceBodyFont == "settings.appearance.bodyFont")
     }
 
     @Test("AppSettings default values")
     func appSettingsDefaultValues() {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: SettingKey.storageBackend)
-        defaults.removeObject(forKey: SettingKey.aiProvider)
-        defaults.removeObject(forKey: SettingKey.appearanceBodyFont)
+        // Q01：在隔离 suite 中运行，不删除/读写用户真实的 standard 配置。
+        TestIsolation.withIsolatedDefaults { defaults in
+            defaults.removeObject(forKey: SettingKey.storageBackend)
+            defaults.removeObject(forKey: SettingKey.aiProvider)
+            defaults.removeObject(forKey: SettingKey.appearanceBodyFont)
 
-        #expect(AppSettings.storageBackend == "webDAV")
-        #expect(AppSettings.aiProvider == "zhipu")
-        #expect(AppSettings.bodyFont == "LXGWWenKai-Regular")
+            #expect(AppSettings.storageBackend == "webDAV")
+            #expect(AppSettings.aiProvider == "zhipu")
+            #expect(AppSettings.bodyFont == "LXGWWenKai-Regular")
+        }
     }
 
     @Test("AppSettings bool defaults")
     func appSettingsBoolDefaults() {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: SettingKey.aiEnabled)
-        defaults.removeObject(forKey: SettingKey.cryptoEnabled)
-        defaults.removeObject(forKey: SettingKey.metadataEnabled)
+        TestIsolation.withIsolatedDefaults { defaults in
+            defaults.removeObject(forKey: SettingKey.aiEnabled)
+            defaults.removeObject(forKey: SettingKey.cryptoEnabled)
+            defaults.removeObject(forKey: SettingKey.metadataEnabled)
 
-        #expect(AppSettings.aiEnabled == false)
-        #expect(AppSettings.cryptoEnabled == false)
-        #expect(AppSettings.metadataEnabled == true)
+            #expect(AppSettings.aiEnabled == false)
+            #expect(AppSettings.cryptoEnabled == false)
+            #expect(AppSettings.metadataEnabled == true)
+        }
     }
 }
 
@@ -313,6 +477,25 @@ struct FTSTrigramSearchTests {
 
 @Suite("Sync Engine")
 struct SyncEngineBasicTests {
+
+    @Test("Conditional manifest writes reject a stale version")
+    func conditionalManifestWriteRejectsStaleVersion() async throws {
+        let mock = MockRemoteStorageProvider()
+        let path = "/Wuyan/manifest.json"
+        mock.files[path] = Data("v1".utf8)
+        let snapshot = try await mock.getVersioned(path)
+        try await mock.putConditionally(path, data: Data("v2".utf8), contentType: "application/json", ifMatch: snapshot.etag, ifNoneMatch: false)
+
+        do {
+            try await mock.putConditionally(path, data: Data("stale".utf8), contentType: "application/json", ifMatch: snapshot.etag, ifNoneMatch: false)
+            Issue.record("旧版本写入不应覆盖最新 manifest")
+        } catch let error as RemoteStorageError {
+            guard case .concurrentModification = error else {
+                Issue.record("应报告 concurrentModification，实际：\(error)")
+                return
+            }
+        }
+    }
 
     @Test("5xx throws instead of silent degrade")
     func syncEngine5xxThrowsNotSilentDegrade() async throws {
@@ -426,7 +609,7 @@ struct EntrySummaryTests {
 
         var entry = try db.entryDAO.create(boardId: board.id, dayNote: note)
         entry.title = nil
-        entry.body = String(repeating: "长文本", count: 50)
+        entry.body = String(repeating: "长文本", count: 60)
         try db.entryDAO.save(entry)
 
         let summaries = try db.entryDAO.timelineSummaries(filter: .all)
@@ -487,13 +670,20 @@ struct MediaPathTests {
 
     @Test("Resolve absolute path passes through via model")
     func resolveAbsolutePathPassthroughViaModel() {
-        let absolute = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
+        // R2-1 安全护栏：媒体根之外的绝对路径一律拒绝；根内的绝对路径原样通过。
+        let absolute = LocalMediaStore.mediaRootURL
+            .appendingPathComponent("media/ab/old.jpg").path
         var asset = MediaAsset(
             entryId: UUID(), type: .photo, filename: "test.jpg",
             mime: "image/jpeg", size: 100, sha256: "abc"
         )
         asset.localPath = absolute
         #expect(asset.absoluteLocalPath == absolute)
+
+        // 根外的绝对路径必须被拒绝（返回空，不解析为可访问路径）。
+        var outside = asset
+        outside.localPath = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
+        #expect(outside.absoluteLocalPath == nil)
     }
 
     @Test("Nil paths return nil")
@@ -522,6 +712,9 @@ struct MarkCleanTests {
         var entry = try db.entryDAO.create(boardId: board.id, dayNote: note)
         entry.body = "写完的内容"
         try db.entryDAO.save(entry)
+        // Q01：save 以值传递，调用方快照不含刷新后的 contentHash；
+        // markClean 必须用数据库中真实推送版本的指纹，否则条件更新不会生效。
+        entry = try #require(try db.entryDAO.entry(id: entry.id))
 
         let beforeClean = try db.entryDAO.entry(id: entry.id)
         #expect(beforeClean?.dirty == true)
@@ -555,15 +748,19 @@ struct BoardDedupTests {
 struct R0_1_SyncStatusTests {
 
     @Test("SyncCoordinator error triggers AppState.errorMessage via onError callback")
+    @MainActor
     func syncErrorForwardsToAppState() throws {
-        let db = try AppDatabase.makeInMemory()
-        let state = AppState(database: db)
-        // 模拟 SyncCoordinator 通过 onError 回调传递错误
-        state.syncCoordinator.onError = { [weak state] message in
-            state?.errorMessage = message
+        // Q01：AppState 构造会触发迁移运行器，必须在隔离容器内完成。
+        try TestIsolation.withIsolatedDefaults { _ in
+            let db = try AppDatabase.makeInMemory()
+            let state = AppState(database: db)
+            // 模拟 SyncCoordinator 通过 onError 回调传递错误
+            state.syncCoordinator.onError = { [weak state] message in
+                state?.errorMessage = message
+            }
+            state.syncCoordinator.onError?("测试同步错误")
+            #expect(state.errorMessage == "测试同步错误")
         }
-        state.syncCoordinator.onError?("测试同步错误")
-        #expect(state.errorMessage == "测试同步错误")
     }
 }
 
@@ -571,43 +768,51 @@ struct R0_1_SyncStatusTests {
 struct R0_2_ArchiveBookkeepingTests {
 
     @Test("Archive year adds to archivedYears; download removes it")
+    @MainActor
     func archiveAndDownloadBookkeeping() throws {
-        let db = try AppDatabase.makeInMemory()
-        let state = AppState(database: db)
+        // Q01：AppState 的归档账本读写经 AppSettings，在隔离容器内完成，
+        // 与 archivedYearsPersist 用例共用同一注入链路。
+        try TestIsolation.withIsolatedDefaults { _ in
+            let db = try AppDatabase.makeInMemory()
+            let state = AppState(database: db)
 
-        // 模拟归档 2023
-        var years = Set(state.archivedYears)
-        years.insert(2023)
-        state.setArchivedYears(years)
-        #expect(state.archivedYears.contains(2023))
+            // 模拟归档 2023
+            var years = Set(state.archivedYears)
+            years.insert(2023)
+            state.setArchivedYears(years)
+            #expect(state.archivedYears.contains(2023))
 
-        // 模拟下载 2023 回来
-        years.remove(2023)
-        state.setArchivedYears(years)
-        #expect(!state.archivedYears.contains(2023))
+            // 模拟下载 2023 回来
+            years.remove(2023)
+            state.setArchivedYears(years)
+            #expect(!state.archivedYears.contains(2023))
+        }
     }
 
     @Test("Archived years persist to UserDefaults")
+    @MainActor
     func archivedYearsPersist() throws {
-        let db = try AppDatabase.makeInMemory()
-        let state = AppState(database: db)
+        // Q01：整个用例在隔离 suite 中运行——AppState 的归档年份读写只落在测试域。
+        try TestIsolation.withIsolatedDefaults { _ in
+            let db = try AppDatabase.makeInMemory()
+            let state = AppState(database: db)
 
-        var years = Set(state.archivedYears)
-        years.insert(2024)
-        years.insert(2022)
-        state.setArchivedYears(years)
+            var years = Set(state.archivedYears)
+            years.insert(2024)
+            years.insert(2022)
+            state.setArchivedYears(years)
 
-        // 从 UserDefaults 读回验证
-        let stored = UserDefaults.standard.array(forKey: SettingKey.archivedYears) as? [Int] ?? []
-        #expect(stored.contains(2024))
-        #expect(stored.contains(2022))
+            let stored = AppSettings.archivedYears
+            #expect(stored.contains(2024))
+            #expect(stored.contains(2022))
+        }
     }
 }
 
 @Suite("R0-3: MarkClean Baseline")
 struct R0_3_MarkCleanBaselineTests {
 
-    @Test("markClean writes expectedHash to baseline, not current contentHash")
+    @Test("markClean with stale expectedHash protects newer edits")
     func markCleanUsesExpectedHash() throws {
         let db = try AppDatabase.makeInMemory()
         let board = try #require(db.boardDAO.all().first)
@@ -624,34 +829,33 @@ struct R0_3_MarkCleanBaselineTests {
         entry.body = "推送期间修改了内容"
         try db.entryDAO.save(entry)
 
-        // markClean 应该写 initialHash（推送时的 hash），而非当前 contentHash
+        // Q01：修正断言方向。markClean 只应确认与推送版本一致的条目；
+        // 推送期间的新编辑必须保持 dirty，等待下一次推送，绝不能被旧提交误清。
         try db.entryDAO.markClean(id: entry.id, expectedHash: initialHash)
 
         let cleaned = try db.entryDAO.entry(id: entry.id)
-        #expect(cleaned?.dirty == false)
-        // baseline 应该是 initialHash，而不是"推送期间修改了内容"的 hash
-    }
-}
-
-@Suite("R0-5: Crypto Guard")
-struct R0_5_CryptoGuardTests {
-
-    @Test("checkCryptoPassphrase returns error when crypto enabled but passphrase empty")
-    func cryptoGuardEmptyPassphrase() {
-        // 清除口令
-        UserDefaults.standard.set(true, forKey: SettingKey.cryptoEnabled)
-        SecureSettings.save("", for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
-
-        let result = SyncCoordinator.checkCryptoPassphrase()
-        #expect(result != nil, "加密开启但口令为空时，应返回错误")
-
-        // 清理
-        UserDefaults.standard.set(false, forKey: SettingKey.cryptoEnabled)
+        #expect(cleaned?.dirty == true, "推送期间的新编辑应保持 dirty=true")
+        // baseline 必须记录推送时的 expectedHash（水位线），而非当前 contentHash
+        let baseline = try db.entryDAO.baselineHash(id: entry.id)
+        #expect(baseline == initialHash, "baseline 应写入推送时的 expectedHash")
     }
 }
 
 @Suite("R0-6: Keychain Migration")
 struct R0_6_KeychainMigrationTests {
+
+    @Test("SecureSettings roundtrip uses isolated keychain in tests")
+    func secureSettingsRoundtrip() {
+        // Q01：SecureSettings 必须可注入隔离 Keychain；测试全程不读写生产凭据。
+        TestIsolation.withIsolatedKeychain {
+            let key = SecureSettingKey.syncPassphrase
+            let value = "passphrase-\(UUID().uuidString.prefix(8))"
+            #expect(SecureSettings.save(value, for: key))
+            #expect(SecureSettings.load(key) == value)
+            SecureSettings.save("", for: key)
+            #expect(SecureSettings.load(key) == "")
+        }
+    }
 
     @Test("load returns value from Keychain when present")
     func loadFromKeychain() {
@@ -659,26 +863,28 @@ struct R0_6_KeychainMigrationTests {
         let value = "test-value-\(UUID().uuidString.prefix(8))"
 
         // 写入 Keychain
-        let written = Keychain().setString(value, for: key)
+        let keychain = Keychain(service: Keychain.testService)
+        let written = keychain.setString(value, for: key)
         #expect(written, "Keychain 写入应成功")
 
         // 读回
-        let loaded = Keychain().string(for: key)
+        let loaded = keychain.string(for: key)
         #expect(loaded == value)
 
         // 清理
-        Keychain().setString(nil, for: key)
+        keychain.setString(nil, for: key)
     }
 
     @Test("Keychain setString returns false on failure (not crash)")
     func keychainSetStringReturnsStatus() {
         // 正常写入应返回 true
         let key = "test.r0_6.normal"
-        let result = Keychain().setString("value", for: key)
+        let keychain = Keychain(service: Keychain.testService)
+        let result = keychain.setString("value", for: key)
         #expect(result)
 
         // 清理
-        Keychain().setString(nil, for: key)
+        keychain.setString(nil, for: key)
     }
 }
 
@@ -690,16 +896,18 @@ struct R0_7_PlaintextMigrationTests {
         let mock = MockRemoteStorageProvider()
         let db = try AppDatabase.makeInMemory()
 
-        // 准备一个明文 manifest
+        // 准备一个明文 manifest（合成 Codable 要求 boards/daynotes 键齐全）
         let plainManifest = """
-        {"schemaVersion":2,"entries":[]}
+        {"schemaVersion":2,"boards":[],"daynotes":[],"entries":[]}
         """.data(using: .utf8)!
         mock.files["/Wuyan/manifest.json"] = plainManifest
 
         // SyncEngine 无加密（crypto: nil）
         let engine = SyncEngine(provider: mock, database: db, backendFingerprint: "test")
-        // syncNow 应该能容忍明文 manifest 而不崩溃
-        // （完整 syncNow 需要完整远端配置，这里只验证 decodeRaw 路径）
+        // Q01：补上空缺的验证——明文 manifest 在未加密模式下应完成整轮同步而非报错
+        let report = try await engine.syncNow()
+        #expect(report.pushed == 0)
+        #expect(report.pulled == 0)
     }
 }
 

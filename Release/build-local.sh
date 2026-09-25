@@ -59,7 +59,8 @@ fi
 
 echo "▶︎ 3/5 ad-hoc 签名 …"
 codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP"
-codesign --verify --verbose=1 "$APP" || true
+# Q02：签名验证失败必须阻断发布，不能 || true 吞掉后继续出 DMG。
+codesign --verify --verbose=1 "$APP"
 
 echo "▶︎ 4/5 生成 DMG …"
 STAGING="$(mktemp -d)"

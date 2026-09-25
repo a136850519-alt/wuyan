@@ -31,7 +31,11 @@ let package = Package(
         ),
         .testTarget(
             name: "WuyanTests",
-            dependencies: ["Wuyan"],
+            dependencies: [
+                "Wuyan",
+                // C01 回归需要直接操作 sync_orphan 表（拨回登记时间模拟宽限期经过）。
+                .product(name: "GRDB", package: "GRDB.swift")
+            ],
             path: "WuyanTests",
             swiftSettings: [
                 .unsafeFlags(["-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"])

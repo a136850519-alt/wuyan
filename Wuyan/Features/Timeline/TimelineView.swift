@@ -43,7 +43,11 @@ struct TimelineView: View {
             .padding(10)
             .background(.thinMaterial)
 
-            if days.isEmpty {
+            // UI-08③：搜索出错时明确报错，不伪装成「还没有日记」
+            if viewModel.isSearching, let searchError = viewModel.searchError {
+                ContentUnavailableView("搜索失败", systemImage: "exclamationmark.triangle", description: Text(searchError))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if days.isEmpty {
                 ContentUnavailableView("还没有日记", systemImage: "text.book.closed", description: Text("按 ⌘N，从今天的一句话开始。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

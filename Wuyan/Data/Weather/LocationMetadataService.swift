@@ -5,6 +5,7 @@ import Foundation
 final class LocationMetadataService: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<CLLocation?, Never>?
+    private var timeoutTask: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -13,13 +14,36 @@ final class LocationMetadataService: NSObject, CLLocationManagerDelegate {
     }
 
     func requestLocation() async -> CLLocation? {
+        // CLLocationManager 只有一个请求槽位。并发调用时拒绝后续请求，由调用方
+        // 在需要时重试；同时设超时，防止权限回调缺失导致永久悬挂。
+        guard continuation == nil else { return nil }
+        if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
+            return nil
+        }
         if manager.authorizationStatus == .notDetermined {
             manager.requestWhenInUseAuthorization()
         }
-        return await withCheckedContinuation { continuation in
-            self.continuation = continuation
-            manager.requestLocation()
-        }
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                timeoutTask?.cancel()
+                timeoutTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.finish(nil)
+                }
+                manager.requestLocation()
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in self?.finish(nil) }
+        })
+    }
+
+    private func finish(_ location: CLLocation?) {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation?.resume(returning: location)
+        continuation = nil
     }
 
     func geocode(_ location: CLLocation) async -> String {
@@ -31,15 +55,13 @@ final class LocationMetadataService: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            continuation?.resume(returning: locations.last)
-            continuation = nil
+            finish(locations.last)
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
-            continuation?.resume(returning: nil)
-            continuation = nil
+            finish(nil)
         }
     }
 }

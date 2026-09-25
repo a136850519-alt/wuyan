@@ -45,10 +45,11 @@ struct TrashView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
+            // UI-04（已确认）：本地立即删除；远端正文/附件保留 90 天后由同步自动清理
             if let title = pendingDelete?.title {
-                Text("将永久删除「\(title)」，不可撤销。")
+                Text("将永久删除「\(title)」：本地立即删除；远端副本保留 90 天后自动清理，期间不可从其他设备恢复。")
             } else {
-                Text("将永久删除此条目，不可撤销。")
+                Text("将永久删除此条目：本地立即删除；远端副本保留 90 天后自动清理，期间不可从其他设备恢复。")
             }
         }
         .confirmationDialog("清空回收站", isPresented: $showsEmptyConfirm) {
@@ -57,7 +58,7 @@ struct TrashView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将永久删除回收站中的 \(entries.count) 篇日记，此操作不可撤销。")
+            Text("将永久删除回收站中的 \(entries.count) 篇日记：本地立即删除；远端副本保留 90 天后自动清理。此操作不可撤销。")
         }
     }
 
@@ -66,7 +67,7 @@ struct TrashView: View {
     }
 
     private func restore(_ entry: Entry) {
-        try? appState.entries.restore(id: entry.id)
+        appState.restoreEntry(entryId: entry.id)
         load()
     }
 

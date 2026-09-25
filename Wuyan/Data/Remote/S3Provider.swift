@@ -33,7 +33,15 @@ struct S3Provider: RemoteStorageProvider {
             let (data, response) = try await URLSession.shared.data(for: request)
             try validate(response, allowed: [200])
             let page = S3ListParser.parse(data: data)
-            items.append(contentsOf: page.items)
+            // Keep the provider path contract identical to WebDAV. S3 returns
+            // object keys without a leading slash, while SyncEngine compares
+            // and stores canonical paths such as `/Wuyan/...`.
+            items.append(contentsOf: page.items.map { item in
+                var item = item
+                let key = item.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                item.path = "/" + key
+                return item
+            })
             continuationToken = page.nextContinuationToken
         } while continuationToken != nil
 
@@ -47,6 +55,17 @@ struct S3Provider: RemoteStorageProvider {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response, allowed: [200])
         return data
+    }
+
+    func getVersioned(_ path: String) async throws -> RemoteObjectSnapshot {
+        var request = URLRequest(url: objectURL(path))
+        request.httpMethod = "GET"
+        try sign(&request, payloadHash: emptyPayloadHash)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response, allowed: [200])
+        let etag = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag")
+            ?? "sha256-" + sha256Hex(data)
+        return RemoteObjectSnapshot(data: data, etag: etag)
     }
 
     func getRange(_ path: String, bytes: Range<Int64>) async throws -> Data {
@@ -67,6 +86,28 @@ struct S3Provider: RemoteStorageProvider {
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         try sign(&request, payloadHash: payloadHash)
         let (_, response) = try await URLSession.shared.data(for: request)
+        try validate(response, allowed: [200, 201, 204])
+    }
+
+    func putConditionally(
+        _ path: String,
+        data: Data,
+        contentType: String,
+        ifMatch: String?,
+        ifNoneMatch: Bool
+    ) async throws {
+        let payloadHash = sha256Hex(data)
+        var request = URLRequest(url: objectURL(path))
+        request.httpMethod = "PUT"
+        request.httpBody = data
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let ifMatch { request.setValue(ifMatch, forHTTPHeaderField: "If-Match") }
+        if ifNoneMatch { request.setValue("*", forHTTPHeaderField: "If-None-Match") }
+        try sign(&request, payloadHash: payloadHash)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        if let status = (response as? HTTPURLResponse)?.statusCode, status == 409 || status == 412 {
+            throw RemoteStorageError.concurrentModification(path: path)
+        }
         try validate(response, allowed: [200, 201, 204])
     }
 
@@ -240,6 +281,20 @@ struct S3Provider: RemoteStorageProvider {
         guard allowed.contains(http.statusCode) else { throw RemoteStorageError.unexpectedStatus(http.statusCode) }
     }
 
+    /// S3-compatible services may return HTTP 200 with an XML `<Error>` body
+    /// for multipart completion. Treat that body as failure so callers never
+    /// cache or clean up an object that was not actually committed.
+    private func validateNoS3Error(_ data: Data, path: String) throws {
+        guard !data.isEmpty else { return }
+        let body = String(data: data, encoding: .utf8) ?? ""
+        guard body.range(of: "<Error", options: [.caseInsensitive, .diacriticInsensitive]) == nil else {
+            let code = body.firstXMLValue(named: "Code") ?? "unknown error"
+            let message = body.firstXMLValue(named: "Message")
+            let reason = [code, message].compactMap { $0 }.joined(separator: ": ")
+            throw RemoteStorageError.multipartFailed(path: path, reason: reason)
+        }
+    }
+
     private func initiateMultipartUpload(path: String, contentType: String) async throws -> String {
         var request = URLRequest(url: objectURL(path, queryItems: [URLQueryItem(name: "uploads", value: "")]))
         request.httpMethod = "POST"
@@ -263,11 +318,12 @@ struct S3Provider: RemoteStorageProvider {
         request.httpMethod = "PUT"
         request.httpBody = data
         try sign(&request, payloadHash: payloadHash)
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (responseBody, response) = try await URLSession.shared.data(for: request)
         try validate(response, allowed: [200])
         guard let etag = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag")?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) else {
             throw RemoteStorageError.unexpectedStatus(-1)
         }
+        try validateNoS3Error(responseBody, path: path)
         return etag
     }
 
@@ -283,8 +339,9 @@ struct S3Provider: RemoteStorageProvider {
         request.httpBody = data
         request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         try sign(&request, payloadHash: sha256Hex(data))
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (responseBody, response) = try await URLSession.shared.data(for: request)
         try validate(response, allowed: [200])
+        try validateNoS3Error(responseBody, path: path)
     }
 
     private func abortMultipartUpload(path: String, uploadId: String) async throws {
@@ -423,5 +480,20 @@ private final class S3ListParser: NSObject, XMLParserDelegate {
             items.append(RemoteItem(path: key, isDirectory: false, size: size, etag: etag, modified: modified))
         }
         buffer = ""
+    }
+}
+
+private extension String {
+    func firstXMLValue(named name: String) -> String? {
+        guard let open = range(of: "<\(name)>", options: .caseInsensitive),
+              let close = range(
+                of: "</\(name)>",
+                options: .caseInsensitive,
+                range: open.upperBound..<endIndex
+              )
+        else { return nil }
+        let value = self[open.upperBound..<close.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }
