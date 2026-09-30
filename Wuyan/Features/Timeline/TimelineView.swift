@@ -11,13 +11,18 @@ struct TimelineView: View {
 
     private var days: [TimelineDay] {
         let items = displayedSummaries
+        // day 键固定为 yyyy-MM-dd（DayKey 生成），定宽零填充，字典序即时间序；
+        // 不能在比较器里走 DayKey.date（DateFormatter）——每次 SwiftUI 重算 body
+        // 都会 O(n log n) 次解析日期，同步进度连发时足以打满主线程。
         return Dictionary(grouping: items, by: \.dayDate)
             .map { TimelineDay(day: $0.key, entries: $0.value) }
-            .sorted { $0.sortDate > $1.sortDate }
+            .sorted { $0.day > $1.day }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // body 内 isEmpty 判断与列表渲染共用同一份 days，避免每帧分组排序两次。
+        let days = self.days
+        return VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)

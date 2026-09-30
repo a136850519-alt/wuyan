@@ -90,14 +90,6 @@ final class TimelineViewModel: ObservableObject {
         isSearching = false
         searchError = nil
     }
-
-    var days: [TimelineDay] {
-        Dictionary(grouping: summaries, by: \.dayDate)
-            .map { day, entries in
-                TimelineDay(day: day, entries: entries)
-            }
-            .sorted { $0.sortDate > $1.sortDate }
-    }
 }
 
 // 辅助：去除 FTS snippet 中的 <mark> 标签，保留文字
@@ -113,16 +105,13 @@ struct TimelineDay: Identifiable, Equatable {
     let day: String
     let entries: [EntrySummary]
 
-    var sortDate: Date {
-        DayKey.date(from: day) ?? entries.map(\.journalDate).max() ?? .distantPast
-    }
-
     var totalWords: Int {
         entries.reduce(0) { $0 + $1.bodyLength }
     }
 
     var latestEntry: EntrySummary? {
-        entries.sorted { $0.journalDate > $1.journalDate }.first
+        // 行渲染每帧调用：max 一次遍历即可，不必整段排序。
+        entries.max { $0.journalDate < $1.journalDate }
     }
 
     var boardCount: Int {

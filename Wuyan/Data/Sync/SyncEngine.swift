@@ -48,6 +48,11 @@ actor SyncEngine {
     /// UI-01：关闭加密迁移模式——读取仍用密钥，写出一律明文（对象与索引）。
     /// 由「关闭加密」流程通过 init 参数启用，迁移完成后调用方再关闭配置。
     private let writesPlaintext: Bool
+    /// 进度上报节流：拉取/推送按条目逐条 report，每次都会把整个 UI 拖着重算，
+    /// 这里限制转发频率；阶段变化与完成时刻不受节流，保证状态不被吞。
+    private var lastReportedAt: ContinuousClock.Instant = .now - .seconds(3600)
+    private var lastReportedProgress: SyncProgress?
+    private static let reportThrottleInterval: Duration = .milliseconds(250)
 
     init(
         provider: RemoteStorageProvider,
@@ -1454,19 +1459,25 @@ actor SyncEngine {
                   local.contentHash == item.hash else { continue }
             let assets = try database.mediaAssetDAO.allAssets(for: local.mediaIds)
             for asset in assets {
-                guard let absolutePath = asset.absoluteLocalPath,
-                  FileManager.default.fileExists(atPath: absolutePath) else { continue }
+                // R4-01：原图与缩略图分开巡检。原图远端已存在不能跳过缩略图检查；
+                // 本地原件缺失（懒下载设备只缓存了缩略图）也只跳过原图补传，
+                // 缩略图仍按自身路径补齐。
                 let remotePath = crypto == nil || writesPlaintext
                     ? SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
                     : SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
-                if try await provider.exists(remotePath) { continue }
-                let data = try Data(contentsOf: URL(fileURLWithPath: absolutePath))
-                let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                guard digest == asset.sha256 else { continue }
-                try await provider.mkcolRecursive((remotePath as NSString).deletingLastPathComponent + "/")
-                try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
-                repaired += 1
-                WuyanLog.sync.warning("巡检补传缺失的媒体对象：\(remotePath)")
+                if let absolutePath = asset.absoluteLocalPath,
+                   FileManager.default.fileExists(atPath: absolutePath),
+                   try await provider.exists(remotePath) == false {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: absolutePath))
+                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    // 本地副本指纹不一致时不传损坏内容，但缩略图检查照常进行。
+                    if digest == asset.sha256 {
+                        try await provider.mkcolRecursive((remotePath as NSString).deletingLastPathComponent + "/")
+                        try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
+                        repaired += 1
+                        WuyanLog.sync.warning("巡检补传缺失的媒体对象：\(remotePath)")
+                    }
+                }
                 if asset.thumbnailPath != nil, let thumbPath = asset.absoluteThumbnailPath,
                    FileManager.default.fileExists(atPath: thumbPath) {
                     let thumbRemote = SyncPaths.thumbnailPath(sha256: asset.sha256)
@@ -1475,6 +1486,7 @@ actor SyncEngine {
                         try await provider.mkcolRecursive("/Wuyan/media/thumbnails/")
                         try await provider.put(thumbRemote, data: try encodeRaw(thumbData), contentType: "application/octet-stream")
                         repaired += 1
+                        WuyanLog.sync.warning("巡检补传缺失的缩略图对象：\(thumbRemote)")
                     }
                 }
             }
@@ -1768,6 +1780,15 @@ actor SyncEngine {
     }
 
     private func report(_ progress: SyncProgress) async {
+        // 节流转发：阶段切换与完成时刻立即透出，其余按固定频率合并，
+        // 避免逐条目进度把主线程拖满。
+        let now = ContinuousClock.now
+        let phaseChanged = progress.phase != lastReportedProgress?.phase
+        let finished = progress.totalUnitCount > 0
+            && progress.completedUnitCount >= progress.totalUnitCount
+        guard phaseChanged || finished || now - lastReportedAt >= Self.reportThrottleInterval else { return }
+        lastReportedAt = now
+        lastReportedProgress = progress
         await progressHandler?(progress)
     }
 

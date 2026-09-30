@@ -89,6 +89,9 @@ struct EditorView: View {
 
     private var writingPane: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if viewModel.externalUpdateDetected {
+                externalUpdateBanner
+            }
             dateAnchor
             TextField("题目", text: $viewModel.title)
                 .font(WuyanFont.title(30))
@@ -105,7 +108,9 @@ struct EditorView: View {
             HStack {
                 Text("\(viewModel.nonWhitespaceCount) 字")
                 Spacer()
-                if viewModel.isDirty {
+                if viewModel.externalUpdateDetected {
+                    Text("已暂停自动保存")
+                } else if viewModel.isDirty {
                     Text("正在保存…")
                 } else if let savedAt = viewModel.lastSavedAt {
                     Text("已保存 \(savedAt, style: .time)")
@@ -119,6 +124,32 @@ struct EditorView: View {
         .padding(.horizontal, 34)
         .padding(.vertical, 28)
         .background(Palette.paper)
+    }
+
+    /// 外部更新横幅：同步/天气定位改写了当前条目且本地有未保存修改时出现，
+    /// 替代原先反复弹出的「条目在保存前已被其它操作更新」全局弹窗。
+    private var externalUpdateBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("该条目在后台已被更新（同步或天气/定位写入）")
+                    .font(.callout.weight(.semibold))
+                Text("自动保存已暂停，你的编辑仍在编辑器中。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("以我的编辑为准") {
+                viewModel.keepCurrentEdits(appState: appState)
+            }
+            Button("重新载入") {
+                viewModel.reloadFromDatabase(appState: appState)
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var immersivePane: some View {
@@ -149,7 +180,9 @@ struct EditorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
-                if viewModel.isDirty {
+                if viewModel.externalUpdateDetected {
+                    Text("已暂停自动保存")
+                } else if viewModel.isDirty {
                     Text("正在保存…")
                 } else if let savedAt = viewModel.lastSavedAt {
                     Text("已保存 \(savedAt, style: .time)")

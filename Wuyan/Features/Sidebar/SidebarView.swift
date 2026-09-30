@@ -9,6 +9,9 @@ struct SidebarView: View {
     @State private var pendingArchiveYear: Int?
     @State private var isArchivedExpanded = true
     @State private var expandedYears: Set<Int> = []
+    // 连续天数在 reloadEntries 时算好缓存：body 每帧都算会对全部条目
+    // 逐条解析日期，同步进度连发时足以打满主线程（与 TimelineView 同款问题）。
+    @State private var streakCount = 0
 
     var body: some View {
         List(selection: $appState.sidebarSelection) {
@@ -117,7 +120,7 @@ struct SidebarView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "flame.fill")
                         .foregroundStyle(Palette.cinnabar)
-                    Text("连续 \(StreakTracker(summaries: entries).currentStreak()) 天")
+                    Text("连续 \(streakCount) 天")
                     Spacer()
                     Image(systemName: "gearshape")
                         .foregroundStyle(.secondary)
@@ -188,6 +191,7 @@ struct SidebarView: View {
 
     private func reloadEntries() {
         entries = (try? appState.entries.timelineSummaries(filter: .all)) ?? []
+        streakCount = StreakTracker(summaries: entries).currentStreak()
         if expandedYears.isEmpty, let first = years.first {
             expandedYears.insert(first)
         }

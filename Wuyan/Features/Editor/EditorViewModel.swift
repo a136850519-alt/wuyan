@@ -20,6 +20,9 @@ final class EditorViewModel: ObservableObject {
     @Published var longitude = ""
     @Published var isDirty = false
     @Published var lastSavedAt: Date?
+    /// 横幅状态：当前条目在后台被外部更新（同步拉取/天气定位回写），且本地还有
+    /// 未保存修改。出现时自动保存暂停，由用户选择「以当前编辑为准」或「重新载入」。
+    @Published var externalUpdateDetected = false
     /// R1-4: 缓存非空白字数，避免 View body 中每次 body 变化都 O(n) 重算
     @Published var nonWhitespaceCount: Int = 0
 
@@ -29,6 +32,12 @@ final class EditorViewModel: ObservableObject {
     private weak var appState: AppState?
     /// 加载时的乐观版本，防止后台回写覆盖同步或用户的新编辑。
     private var loadedContentHash: String?
+    /// 观察当前打开条目的数据库变化，感知同步等外部改写。
+    private var observationTask: Task<Void, Never>?
+
+    deinit {
+        observationTask?.cancel()
+    }
 
     init() {
         Publishers.CombineLatest4($title, $body, $tagsText, $mood)
@@ -73,6 +82,8 @@ final class EditorViewModel: ObservableObject {
         guard let id else {
             entry = nil
             loadedContentHash = nil
+            externalUpdateDetected = false
+            restartObservation(id: nil, appState: appState)
             return
         }
 
@@ -80,30 +91,41 @@ final class EditorViewModel: ObservableObject {
             guard let fetched = try appState.entries.entry(id: id) else {
                 entry = nil
                 loadedContentHash = nil
+                externalUpdateDetected = false
+                restartObservation(id: nil, appState: appState)
                 return
             }
-            isLoading = true
-            isDirty = false
-            entry = fetched
-            loadedContentHash = fetched.contentHash
-            title = fetched.title ?? ""
-            body = fetched.body
-            bodyRTF = fetched.bodyRTF
-            tagsText = fetched.tags.joined(separator: ", ")
-            mood = fetched.mood
-            journalDate = fetched.journalDate
-            isFavorite = fetched.isFavorite
-            boardId = fetched.boardId
-            mediaAssets = (try? appState.db.mediaAssetDAO.assets(for: fetched.id)) ?? []
-            weatherCondition = fetched.weather?.condition ?? ""
-            weatherTemp = fetched.weather.map { String(format: "%.1f", $0.tempC) } ?? ""
-            placeName = fetched.location?.placeName ?? ""
-            latitude = fetched.location.map { String($0.lat) } ?? ""
-            longitude = fetched.location.map { String($0.lon) } ?? ""
-            isLoading = false
+            externalUpdateDetected = false
+            apply(fetched)
         } catch {
             appState.errorMessage = error.localizedDescription
         }
+        restartObservation(id: id, appState: appState)
+    }
+
+    /// 把数据库条目应用到编辑器各字段（载入与外部更新静默刷新共用）。
+    /// isLoading 保护 Combine 管线：字段回填不应触发自动保存。
+    private func apply(_ fetched: Entry) {
+        guard let appState else { return }
+        isLoading = true
+        defer { isLoading = false }
+        isDirty = false
+        entry = fetched
+        loadedContentHash = fetched.contentHash
+        title = fetched.title ?? ""
+        body = fetched.body
+        bodyRTF = fetched.bodyRTF
+        tagsText = fetched.tags.joined(separator: ", ")
+        mood = fetched.mood
+        journalDate = fetched.journalDate
+        isFavorite = fetched.isFavorite
+        boardId = fetched.boardId
+        mediaAssets = (try? appState.db.mediaAssetDAO.assets(for: fetched.id)) ?? []
+        weatherCondition = fetched.weather?.condition ?? ""
+        weatherTemp = fetched.weather.map { String(format: "%.1f", $0.tempC) } ?? ""
+        placeName = fetched.location?.placeName ?? ""
+        latitude = fetched.location.map { String($0.lat) } ?? ""
+        longitude = fetched.location.map { String($0.lon) } ?? ""
     }
 
     func saveNow(appState: AppState) {
@@ -119,6 +141,29 @@ final class EditorViewModel: ObservableObject {
             return
         }
         guard var entry else { return }
+        applyEditorFields(to: &entry)
+
+        do {
+            try appState.entries.save(entry, expectedContentHash: loadedContentHash)
+            self.entry = try appState.entries.entry(id: entry.id) ?? entry
+            loadedContentHash = self.entry?.contentHash
+            self.isDirty = false
+            self.lastSavedAt = Date()
+            appState.refreshRemindersForToday()
+            // 通知自动同步防抖：编辑保存后 5 分钟自动同步
+            appState.syncCoordinator.notifyEditCompleted()
+        } catch EntrySaveError.concurrentModification {
+            // 自动保存每 0.5 秒重试一次，冲突走全局弹窗会反复轰炸；
+            // 改为暂停自动保存并在编辑器内亮横幅，由用户决定保留方向。
+            markExternalUpdateDetected()
+        } catch {
+            appState.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 把编辑器字段写回条目（自动保存与「以当前编辑为准」共用）。
+    /// 天气/定位不由编辑器改动，保留传入条目上的现有值。
+    private func applyEditorFields(to entry: inout Entry) {
         entry.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title
         entry.body = body
         entry.bodyRTF = bodyRTF
@@ -134,19 +179,6 @@ final class EditorViewModel: ObservableObject {
         entry.isFavorite = isFavorite
         if let boardId {
             entry.boardId = boardId
-        }
-
-        do {
-            try appState.entries.save(entry, expectedContentHash: loadedContentHash)
-            self.entry = try appState.entries.entry(id: entry.id) ?? entry
-            loadedContentHash = self.entry?.contentHash
-            self.isDirty = false
-            self.lastSavedAt = Date()
-            appState.refreshRemindersForToday()
-            // 通知自动同步防抖：编辑保存后 5 分钟自动同步
-            appState.syncCoordinator.notifyEditCompleted()
-        } catch {
-            appState.errorMessage = error.localizedDescription
         }
     }
 
@@ -246,10 +278,49 @@ final class EditorViewModel: ObservableObject {
             try appState.entries.save(entry, expectedContentHash: loadedContentHash)
             self.entry = try appState.entries.entry(id: entry.id) ?? entry
             loadedContentHash = self.entry?.contentHash
+            externalUpdateDetected = false
+            appState.syncCoordinator.notifyEditCompleted()
+        } catch EntrySaveError.concurrentModification {
+            markExternalUpdateDetected()
+        } catch {
+            appState.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 暂停自动保存并亮出冲突横幅（不弹全局 alert）。
+    private func markExternalUpdateDetected() {
+        externalUpdateDetected = true
+        saveTask?.cancel()
+        saveTask = nil
+    }
+
+    /// 横幅「以当前编辑为准」：在数据库最新版本上叠加编辑器字段后保存。
+    /// 条目以数据库版本为底稿，天气/定位等后台字段不会被旧值覆盖；
+    /// 若条目已不存在（如被其它设备删除），回退为重新载入。
+    func keepCurrentEdits(appState: AppState) {
+        guard let current = entry,
+              var fresh = try? appState.entries.entry(id: current.id) else {
+            reloadFromDatabase(appState: appState)
+            return
+        }
+        applyEditorFields(to: &fresh)
+        do {
+            try appState.entries.save(fresh, expectedContentHash: fresh.contentHash)
+            self.entry = try appState.entries.entry(id: fresh.id) ?? fresh
+            loadedContentHash = self.entry?.contentHash
+            isDirty = false
+            externalUpdateDetected = false
+            lastSavedAt = Date()
             appState.syncCoordinator.notifyEditCompleted()
         } catch {
             appState.errorMessage = error.localizedDescription
         }
+    }
+
+    /// 横幅「重新载入」：放弃未保存的编辑，以数据库当前版本为准。
+    func reloadFromDatabase(appState: AppState) {
+        guard let id = entry?.id else { return }
+        load(id: id, appState: appState)
     }
 
     /// 将当前条目的未落盘变更立即同步写出（切换条目/退出时调用）
@@ -258,6 +329,32 @@ final class EditorViewModel: ObservableObject {
         saveTask?.cancel()
         saveTask = nil
         saveNow(appState: appState)
+    }
+
+    /// 切换观察目标。观察流在数据库事务提交时逐条回报，循环体在主 actor 上执行。
+    private func restartObservation(id: UUID?, appState: AppState) {
+        observationTask?.cancel()
+        observationTask = nil
+        guard let id else { return }
+        observationTask = Task { [weak self] in
+            for await updated in appState.entries.observeEntry(id: id) {
+                self?.handleObservedEntry(updated)
+            }
+        }
+    }
+
+    /// 外部改写当前条目（同步拉取/天气定位回写/其它设备）时的处理：
+    /// - 无未保存修改：静默应用新版本，编辑器与数据库保持一致；
+    /// - 有未保存修改：暂停自动保存并亮横幅，由用户选择保留编辑或重新载入。
+    private func handleObservedEntry(_ fetched: Entry?) {
+        guard let fetched, let current = entry, fetched.id == current.id else { return }
+        // 自己刚保存的版本与已知版本不处理，避免自触发的回环。
+        guard fetched.contentHash != loadedContentHash else { return }
+        if !isDirty {
+            apply(fetched)
+        } else if !externalUpdateDetected {
+            markExternalUpdateDetected()
+        }
     }
 
     private func scheduleSave() {

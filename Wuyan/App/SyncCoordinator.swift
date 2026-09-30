@@ -44,6 +44,13 @@ final class SyncCoordinator: ObservableObject {
 
     // MARK: - 自动同步
 
+    /// 进度发布统一入口：值未变化不重复 set。@Published 每次 set 都会触发
+    /// objectWillChange 并把整棵视图树拖着重算，同步进度连发时足以打满主线程。
+    private func publish(progress: SyncProgress?, message: String?) {
+        if syncProgress != progress { syncProgress = progress }
+        if syncMessage != message { syncMessage = message }
+    }
+
     /// 编辑防抖定时器：上次保存后 5 分钟自动同步
     private var editDebounceTask: Task<Void, Never>?
     private static let editDebounceInterval: Duration = .seconds(300) // 5 minutes
@@ -152,12 +159,13 @@ final class SyncCoordinator: ObservableObject {
             let crypto = ProviderFactory.makeSyncCrypto()
             let engine = SyncEngine(provider: provider, database: dbRef, crypto: crypto, archivedYears: archivedYears, backendFingerprint: fingerprint) { progress in
                 await MainActor.run {
-                    self.syncProgress = progress
+                    let message: String
                     if let detail = progress.detail, !detail.isEmpty {
-                        self.syncMessage = "\(progress.phase)：\(detail)"
+                        message = "\(progress.phase)：\(detail)"
                     } else {
-                        self.syncMessage = progress.phase
+                        message = progress.phase
                     }
+                    self.publish(progress: progress, message: message)
                 }
             }
             do {
@@ -321,8 +329,7 @@ final class SyncCoordinator: ObservableObject {
             do {
                 let engine = SyncEngine(provider: provider, database: database, crypto: crypto, archivedYears: archivedYears, backendFingerprint: fingerprint) { progress in
                     await MainActor.run {
-                        self.syncProgress = progress
-                        self.syncMessage = "\(year) 年归档：\(progress.phase)"
+                        self.publish(progress: progress, message: "\(year) 年归档：\(progress.phase)")
                     }
                 }
                 // UI-02：引擎已完成推送 + 读回校验；只根据验证通过的快照清理本地。
@@ -419,8 +426,7 @@ final class SyncCoordinator: ObservableObject {
             do {
                 let engine = SyncEngine(provider: provider, database: database, crypto: crypto, archivedYears: Set(), backendFingerprint: fingerprint) { progress in
                     await MainActor.run {
-                        self.syncProgress = progress
-                        self.syncMessage = "\(year) 年下载：\(progress.phase)"
+                        self.publish(progress: progress, message: "\(year) 年下载：\(progress.phase)")
                     }
                 }
                 _ = try await engine.pullYear(year)

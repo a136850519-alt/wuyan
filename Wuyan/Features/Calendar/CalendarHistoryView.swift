@@ -6,20 +6,22 @@ struct CalendarHistoryView: View {
     @State private var entries: [EntrySummary] = []
     @State private var selectedDay: String? = Date().dayKey
     @State private var selectedDayNote: DayNote?
+    // 连续/热力图统计在 load() 时算好缓存：body 每帧都对全部条目逐条
+    // 解析日期（DateFormatter），与 SidebarView 同款的主线程打满问题。
+    @State private var currentStreakCount = 0
+    @State private var longestStreakCount = 0
+    @State private var dailyCountsByDate: [Date: Int] = [:]
 
     var body: some View {
-        let currentStreak = tracker.currentStreak()
-        let longestStreak = tracker.longestStreak()
         let countsByDay = Dictionary(grouping: entries, by: \.dayDate).mapValues(\.count)
         let totalWords = entries.reduce(0) { $0 + $1.bodyLength }
         let visibleEntries = filteredEntries
-        let dailyCounts = tracker.dailyCounts(in: lastYearInterval)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 12) {
-                    StatSummaryCard(title: "当前连续", value: "\(currentStreak) 天")
-                    StatSummaryCard(title: "最长连续", value: "\(longestStreak) 天")
+                    StatSummaryCard(title: "当前连续", value: "\(currentStreakCount) 天")
+                    StatSummaryCard(title: "最长连续", value: "\(longestStreakCount) 天")
                     StatSummaryCard(title: "累计篇", value: "\(entries.count)")
                     StatSummaryCard(title: "累计字", value: "\(totalWords)")
                 }
@@ -45,7 +47,7 @@ struct CalendarHistoryView: View {
                 Text("过去一年")
                     .font(.headline)
                     .padding(.horizontal)
-                CalendarHeatmap(counts: dailyCounts)
+                CalendarHeatmap(counts: dailyCountsByDate)
                     .padding(.horizontal)
             }
         }
@@ -54,10 +56,6 @@ struct CalendarHistoryView: View {
         .onChange(of: selectedDay) {
             loadSelectedDayNote()
         }
-    }
-
-    private var tracker: StreakTracker {
-        StreakTracker(summaries: entries)
     }
 
     private var lastYearInterval: DateInterval {
@@ -208,6 +206,10 @@ struct CalendarHistoryView: View {
 
     private func load() {
         entries = (try? appState.entries.timelineSummaries(filter: .all)) ?? []
+        let tracker = StreakTracker(summaries: entries)
+        currentStreakCount = tracker.currentStreak()
+        longestStreakCount = tracker.longestStreak()
+        dailyCountsByDate = tracker.dailyCounts(in: lastYearInterval)
         loadSelectedDayNote()
     }
 

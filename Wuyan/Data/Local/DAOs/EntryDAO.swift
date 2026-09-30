@@ -110,9 +110,28 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
-    /// 轻量观察：只返回 EntrySummary（不含 body/bodyRTF），用于时间线
-    func observeTimelineSummaries(filter: TimelineFilter) -> AsyncStream<[EntrySummary]> {
+    /// 观察单条条目（含正文）。供编辑器感知同步拉取、天气/定位回写等
+    /// 对当前打开条目的外部改写，及时刷新版本基线而不是等保存时报冲突。
+    func observeEntry(id: UUID) -> AsyncStream<Entry?> {
         let observation = ValueObservation.tracking { db in
+            try Entry.fetchOne(db, key: id.uuidString)
+        }
+
+        return AsyncStream { continuation in
+            let cancellable = observation.start(
+                in: writer,
+                scheduling: .immediate,
+                onError: { _ in continuation.finish() },
+                onChange: { entry in continuation.yield(entry) }
+            )
+            continuation.onTermination = { _ in
+                cancellable.cancel()
+            }
+        }
+    }
+
+    /// 轻量观察：只返回 EntrySummary（不含 body/bodyRTF），用于时间线
+    func observeTimelineSummaries(filter: TimelineFilter) -> AsyncStream<[EntrySummary]> {        let observation = ValueObservation.tracking { db in
             var sql = """
                 SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength,
                        isFavorite, boardId, tags, isDraft
