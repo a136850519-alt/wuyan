@@ -5,8 +5,44 @@ extension Notification.Name {
     static let wuyanWillTerminate = Notification.Name("wuyanWillTerminate")
 }
 
+/// B08：macOS 26/27 的 SwiftUI 缺陷——WindowGroup 应用收到 reopen（点击 Dock 图标）时：
+/// 1) 已最小化的窗口不会被还原（app 激活但窗口缩在 Dock 里没反应）；
+/// 2) 窗口被红色按钮关闭后也不会重建（app 挂在 Dock 上无窗口可切）。
+/// 在此手动接管：先还原最小化窗口；一个可见窗口都没有时用 openWindow 重建主窗口。
+private final class WuyanAppDelegate: NSObject, NSApplicationDelegate {
+    /// 由主窗口内容的 ReopenWindowActionCaptor 在 onAppear 时捕获，
+    /// 窗口全部关闭后 delegate 仍可用它重建窗口（OpenWindowAction 可安全存储）。
+    static var openWindowAction: OpenWindowAction?
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        let miniaturized = sender.windows.filter { $0.isMiniaturized }
+        if !miniaturized.isEmpty {
+            miniaturized.forEach { $0.deminiaturize(nil) }
+            return false
+        }
+        guard !flag else { return false }
+        if let openWindow = Self.openWindowAction {
+            openWindow(id: "main")
+            return false
+        }
+        return true
+    }
+}
+
+/// 捕获 openWindow 环境动作供 AppDelegate 使用（SwiftUI 的 environment 无法在 delegate 里直接读取）。
+private struct ReopenWindowActionCaptor: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear { WuyanAppDelegate.openWindowAction = openWindow }
+    }
+}
+
 @main
 struct WuyanApp: App {
+    @NSApplicationDelegateAdaptor(WuyanAppDelegate.self) private var appDelegate
     @StateObject private var appState: AppState
 
     init() {
@@ -39,11 +75,11 @@ struct WuyanApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             RootView()
                 .environmentObject(appState)
                 .frame(minWidth: 1080, minHeight: 680)
-                .background(WindowMaximizer())
+                .background(ReopenWindowActionCaptor())
                 .onAppear {
                     // Refill the non-repeating reminder window on every launch.
                     appState.refreshRemindersForToday()
@@ -66,19 +102,4 @@ struct WuyanApp: App {
             AppCommands(appState: appState)
         }
     }
-}
-
-private struct WindowMaximizer: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            if !window.isZoomed {
-                window.zoom(nil)
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
 }

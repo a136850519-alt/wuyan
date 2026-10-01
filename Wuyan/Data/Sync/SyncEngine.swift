@@ -1439,6 +1439,9 @@ actor SyncEngine {
             guard let local = try database.entryDAO.entry(id: item.id),
                   local.contentHash == item.hash else { continue }
             if try await provider.exists(item.path) { continue }
+            // 与 pushEntries 一致：PUT 前确保父目录（ensureRemoteTree 只建顶层骨架，
+            // 年/月子目录由各推送路径自建；远端目录被清后不补建会 404）。
+            try await provider.mkcolRecursive((item.path as NSString).deletingLastPathComponent + "/")
             let envelope = try buildEnvelope(for: local)
             try await provider.put(item.path, data: try encode(envelope), contentType: "application/json")
             repaired += 1
@@ -1448,6 +1451,7 @@ actor SyncEngine {
             guard let local = try database.dayNoteDAO.note(dayKey: item.date),
                   Hashing.dayNoteHash(local) == item.hash else { continue }
             if try await provider.exists(item.path) { continue }
+            try await provider.mkcolRecursive((item.path as NSString).deletingLastPathComponent + "/")
             try await provider.put(item.path, data: try encode(local), contentType: "application/json")
             repaired += 1
             WuyanLog.sync.warning("巡检补传缺失的日札对象：\(item.path)")

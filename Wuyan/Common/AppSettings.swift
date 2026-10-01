@@ -12,6 +12,8 @@ enum SettingKey {
     static let s3Bucket = "settings.s3.bucket"
     static let s3AccessKey = "settings.s3.accessKey"
     static let s3PathStyle = "settings.s3.pathStyle"
+    /// 仅手动同步模式（默认关）：false 时禁用启动/唤醒/编辑防抖三处自动触发，只保留菜单 ⌘⇧S。
+    static let syncAutoSyncEnabled = "settings.sync.autoSyncEnabled"
 
     // MARK: - AI
     static let aiEnabled = "settings.ai.enabled"
@@ -80,6 +82,9 @@ enum AppSettings {
     }
     static var s3PathStyle: Bool {
         defaults.object(forKey: SettingKey.s3PathStyle) as? Bool ?? true
+    }
+    static var syncAutoSyncEnabled: Bool {
+        defaults.bool(forKey: SettingKey.syncAutoSyncEnabled)
     }
 
     // MARK: - AI

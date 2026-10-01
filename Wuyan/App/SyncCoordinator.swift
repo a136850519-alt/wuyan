@@ -92,6 +92,12 @@ final class SyncCoordinator: ObservableObject {
     /// R1-5: 用轻量 UserDefaults 检查替代 makeRemoteStorageProvider() 构建，
     /// 避免每次自动同步探测都触发 Keychain 读取。
     private func autoSyncIfConfigured() {
+        // 仅手动同步模式：代理/NAS 链路不稳定时段由用户自己决定何时同步，
+        // 三处自动触发（启动/唤醒/编辑防抖）在此统一拦截；手动 ⌘⇧S 不受影响。
+        guard AppSettings.syncAutoSyncEnabled else {
+            WuyanLog.sync.info("自动同步已禁用（仅手动 ⌘⇧S），跳过自动触发")
+            return
+        }
         guard !rescueMode else {
             setSyncError("救援模式：自动同步已禁用。")
             return
