@@ -15,6 +15,9 @@ final class SyncCoordinator: ObservableObject {
     /// It prevents an established encrypted backend from silently accepting a
     /// plaintext thumbnail/object while still allowing an explicit migration.
     private var plaintextToleratedForDownloads = false
+    /// V3-09/V3-06：本后端的 manifest 格式状态只在一轮附件下载中读取一次；
+    /// 密钥缓存命中时仍保留这份状态，不以 currentHeader 存在替代迁移判断。
+    private var downloadManifestCheckedFingerprint: String?
     private var unlockedCrypto: (fingerprint: String, passphraseDigest: String, crypto: SyncCrypto)?
 
     @Published var syncMessage: String?
@@ -242,6 +245,7 @@ final class SyncCoordinator: ObservableObject {
                 )
                 await MainActor.run {
                     self.unlockedCrypto = nil
+                    self.downloadManifestCheckedFingerprint = nil
                     completion?(rewrote ? "口令已更换：数据密钥已用新口令重新包装，日记数据无需重传。" : "口令已保存：远端还没有加密索引，将在下次加密同步时生效。")
                 }
             } catch {
@@ -265,6 +269,7 @@ final class SyncCoordinator: ObservableObject {
             return
         }
         unlockedCrypto = nil
+        downloadManifestCheckedFingerprint = nil
         guard let crypto = ProviderFactory.makeSyncCrypto() else {
             completion?("未找到加密口令，无法读取远端密文。")
             return
@@ -297,6 +302,7 @@ final class SyncCoordinator: ObservableObject {
                 AppSettings.setCryptoEnabled(false)
                 await MainActor.run {
                     self.unlockedCrypto = nil
+                    self.downloadManifestCheckedFingerprint = nil
                     self.syncProgress = nil
                     self.syncMessage = "已关闭加密：远端数据已全部迁移为明文。"
                     completion?("已关闭加密：远端数据已全部迁移为明文。")
@@ -574,14 +580,17 @@ final class SyncCoordinator: ObservableObject {
         provider: any RemoteStorageProvider,
         crypto suppliedCrypto: SyncCrypto? = nil
     ) async throws -> SyncCrypto? {
-        plaintextToleratedForDownloads = false
         guard let crypto = suppliedCrypto ?? cachedSyncCrypto() else { return nil }
-        if crypto.currentHeader != nil {
+        let fingerprint = ProviderFactory.backendFingerprint()
+        if downloadManifestCheckedFingerprint == fingerprint {
             return crypto
         }
-        guard try await provider.exists(SyncPaths.manifest) else { return crypto }
+        plaintextToleratedForDownloads = false
+        guard try await provider.exists(SyncPaths.manifest) else {
+            downloadManifestCheckedFingerprint = fingerprint
+            return crypto
+        }
         let data = try await provider.get(SyncPaths.manifest)
-        let fingerprint = ProviderFactory.backendFingerprint()
         let established = (try? db.syncStateDAO.value(forKey: "sync.cryptoEstablished.\(fingerprint)")) == "1"
         let migrationInProgress = (try? db.syncStateDAO.value(forKey: "sync.cryptoMigration.\(fingerprint)")) == "in-progress"
         if let container = try? JSONDecoder.wuyan.decode(ManifestContainer.self, from: data),
@@ -601,12 +610,14 @@ final class SyncCoordinator: ObservableObject {
             // fingerprint has established encryption it is a downgrade error.
             plaintextToleratedForDownloads = !established || migrationInProgress
         }
+        downloadManifestCheckedFingerprint = fingerprint
         return crypto
     }
 
     private func cachedSyncCrypto() -> SyncCrypto? {
         guard AppSettings.cryptoEnabled else {
             unlockedCrypto = nil
+            downloadManifestCheckedFingerprint = nil
             return nil
         }
         let passphrase = SecureSettings.load(
@@ -615,6 +626,7 @@ final class SyncCoordinator: ObservableObject {
         )
         guard !passphrase.isEmpty else {
             unlockedCrypto = nil
+            downloadManifestCheckedFingerprint = nil
             return nil
         }
         let fingerprint = ProviderFactory.backendFingerprint()
@@ -626,6 +638,7 @@ final class SyncCoordinator: ObservableObject {
             return cached.crypto
         }
         guard let crypto = ProviderFactory.makeSyncCrypto() else { return nil }
+        downloadManifestCheckedFingerprint = nil
         unlockedCrypto = (fingerprint, digest, crypto)
         return crypto
     }
@@ -650,6 +663,7 @@ final class SyncCoordinator: ObservableObject {
             if case let .decryptFailed(reason) = e,
                reason.contains("未知的数据密钥") || reason.contains("密钥尚未解锁") {
                 unlockedCrypto = nil
+                downloadManifestCheckedFingerprint = nil
             }
             throw e
         } catch {
