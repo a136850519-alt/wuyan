@@ -125,6 +125,7 @@ enum TestIsolation {
 
 final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendable {
     var files: [String: Data] = [:]
+    var putCounts: [String: Int] = [:]
     var directories: Set<String> = []
     var shouldFail5xx = false
     private let conditionalLock = NSLock()
@@ -181,6 +182,7 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
             beforeMediaWrite = nil
             try action()
         }
+        putCounts[path, default: 0] += 1
         files[path] = data
     }
 
@@ -201,6 +203,7 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
                 throw RemoteStorageError.concurrentModification(path: path)
             }
         }
+        putCounts[path, default: 0] += 1
         files[path] = data
     }
 

@@ -314,6 +314,28 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// V3-15：远端永久清除的条目移入本地回收站并标记为 clean，基线对齐新指纹。
+    /// 在一个写事务内完成，避免清除后下一轮三方合并误判为本地改动。
+    func applyRemotePurge(id: UUID) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE entry SET deleted = 1, dirty = 0, updatedAt = ? WHERE id = ?",
+                arguments: [Date(), id.uuidString]
+            )
+            try Self.refreshSyncHash(id: id, db: db)
+            if let hash = try String.fetchOne(db, sql: "SELECT contentHash FROM entry WHERE id = ?", arguments: [id.uuidString]) {
+                try db.execute(
+                    sql: """
+                    INSERT INTO sync_baseline(entryId, hash, updatedAt) VALUES (?, ?, ?)
+                    ON CONFLICT(entryId) DO UPDATE SET hash = excluded.hash, updatedAt = excluded.updatedAt
+                    """,
+                    arguments: [id.uuidString, hash, Date()]
+                )
+            }
+            try db.execute(sql: "DELETE FROM sync_tombstone WHERE entryId = ?", arguments: [id.uuidString])
+        }
+    }
+
     /// UI-06：冲突解决——把留档副本写回为主版本或以新 ID 存为新条目。
     /// 重算同步指纹并置 dirty=true，等待下一次推送覆盖远端；
     /// 已存在的本地附件记录优先保留（保护已下载文件路径）。

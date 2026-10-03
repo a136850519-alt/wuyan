@@ -55,6 +55,8 @@ actor SyncEngine {
     /// C01：缺失对象巡检间隔。巡检发现「索引引用的对象远端已不存在」时，
     /// 用本地一致副本自动补传，不依赖用户再次编辑。0 表示每轮同步都巡检（测试用）。
     private let missingObjectAuditInterval: TimeInterval
+    /// V3-15：删除墓碑/对象保留期，可注入 0 以覆盖过期清除路径。
+    private let deletedRetention: TimeInterval
     /// UI-01：关闭加密迁移模式——读取仍用密钥，写出一律明文（对象与索引）。
     /// 由「关闭加密」流程通过 init 参数启用，迁移完成后调用方再关闭配置。
     private let writesPlaintext: Bool
@@ -73,6 +75,7 @@ actor SyncEngine {
         plaintextMigration: Bool = false,
         orphanGraceInterval: TimeInterval = 48 * 3600,
         missingObjectAuditInterval: TimeInterval = 24 * 3600,
+        deletedRetention: TimeInterval = 90 * 86_400,
         progressHandler: ProgressHandler? = nil
     ) {
         self.provider = provider
@@ -84,6 +87,7 @@ actor SyncEngine {
         // 引用才删除，给「其它设备恢复旧内容」留出并发窗口。测试可注入更短宽限。
         self.orphanGraceInterval = orphanGraceInterval
         self.missingObjectAuditInterval = missingObjectAuditInterval
+        self.deletedRetention = deletedRetention
         self.progressHandler = progressHandler
         // R2-5: 空指纹回退全局 key 的路径已删除；空串时从 ProviderFactory 动态推导
         self.backendFingerprint = backendFingerprint.isEmpty
@@ -117,7 +121,10 @@ actor SyncEngine {
             // 空清单始终视为后端初始化/重置状态。持久化标记只能减少工作量，
             // 不能证明远端仍然存在数据；后端被清空后若继续信任旧标记，会漏推
             // 本地已经 clean 的条目。
+            let localPurged = try database.syncStateDAO.purgedEntries()
             let shouldBootstrapBackend = loadedManifest.entries.isEmpty
+                && (loadedManifest.purged ?? []).isEmpty
+                && localPurged.isEmpty
 
             // B03：迁移状态持久化在数据库。上一轮同步在发布密钥头后中断时，
             // 状态仍是 in-progress——本轮强制补完迁移，不依赖内存标记，
@@ -202,7 +209,10 @@ actor SyncEngine {
             // 条目数据同库同生命周期。换空库/恢复旧库时水位线随之缺失或还原，
             // 同步必然完整拉取，不会再沿用另一份数据的「已同步」结论漏拉日记。
             let computedRevision = Self.computeRevision(
-                entries: manifest.entries, daynotes: manifest.daynotes, boards: manifest.boards
+                entries: manifest.entries,
+                daynotes: manifest.daynotes,
+                boards: manifest.boards,
+                purged: manifest.purged ?? []
             )
             let storedRevision = try database.syncStateDAO.value(forKey: revisionKey)
             let remoteUnchanged = manifest.revision == computedRevision
@@ -230,6 +240,7 @@ actor SyncEngine {
                     from: manifest, localHashes: dayNoteHashes, baselines: dayNoteBaselines, progress: &progress
                 )
             }
+            try await applyRemotePurges(manifest: &manifest, report: &report)
 
             // C02：另一设备的「关闭加密」迁移进行中——本轮不反向重加密。
             // pull 阶段读到明文对象会重新置位迁移标记，这里统一压掉，
@@ -308,13 +319,13 @@ actor SyncEngine {
             progress.phase = "正在保存同步索引"
             await self.report(progress)
             // 先裁剪陈旧墓碑，再据裁剪后的内容计算指纹，保证「无变化」时指纹稳定不抖动。
-            let pruneCutoff = Date().addingTimeInterval(-90 * 86_400)
+            let pruneCutoff = Date().addingTimeInterval(-deletedRetention)
             let pruneNow = Date()
             // UI-04（已确认）：彻底删除后远端保留 90 天，到期由同步自动清理
             // 正文对象、冲突副本及不再被引用的媒体文件。
-            try await cleanupExpiredRemoteEntities(&manifest, now: pruneNow, retention: 90 * 86_400)
+            try await cleanupExpiredRemoteEntities(&manifest, now: pruneNow, retention: deletedRetention)
             try database.entryDAO.pruneTombstones(olderThan: pruneCutoff)
-            manifest = pruneManifest(manifest, now: pruneNow, retention: 90 * 86_400)
+            manifest = try pruneManifest(manifest, now: pruneNow, retention: deletedRetention)
             manifest.boards = Self.mergeBoardStates(
                 remote: manifest.boards,
                 local: try database.boardDAO.allIncludingDeleted()
@@ -737,7 +748,9 @@ actor SyncEngine {
                 plaintextTolerated = writesPlaintext || localMigrationInProgress
             }
         }
-        return (try decodeManifestData(snapshot.data), snapshot.etag, true)
+        var manifest = try decodeManifestData(snapshot.data)
+        Self.normalizePurges(&manifest)
+        return (manifest, snapshot.etag, true)
     }
 
     /// A04：明文→加密迁移开始时发布「带数据密钥头的加密索引」（内容不变，仅换格式）。
@@ -881,7 +894,30 @@ actor SyncEngine {
                     }
                 }
             }
-            manifest.revision = Self.computeRevision(entries: manifest.entries, daynotes: manifest.daynotes, boards: manifest.boards)
+            // V3-15：旧版客户端可能保存索引时丢掉 purged；本地留存表与当前
+            // 输入、远端快照取并集，保证清除记录不会因一次旧客户端写入而消失。
+            var purgedByID = Dictionary(uniqueKeysWithValues: (manifest.purged ?? []).map { ($0.id, $0.deletedAt) })
+            for (id, deletedAt) in try database.syncStateDAO.purgedEntries() {
+                if deletedAt > (purgedByID[id] ?? .distantPast) {
+                    purgedByID[id] = deletedAt
+                }
+            }
+            let purgedBeforeNormalize = Set(purgedByID.keys)
+            manifest.purged = purgedByID.map { PurgedEntry(id: $0.key, deletedAt: $0.value) }
+            Self.normalizePurges(&manifest)
+            let restoredIDs = purgedBeforeNormalize.subtracting(Set((manifest.purged ?? []).map(\.id)))
+            if !restoredIDs.isEmpty {
+                try database.syncStateDAO.dropPurged(ids: Array(restoredIDs))
+            }
+            if let purged = manifest.purged, !purged.isEmpty {
+                try database.syncStateDAO.recordPurged(purged)
+            }
+            manifest.revision = Self.computeRevision(
+                entries: manifest.entries,
+                daynotes: manifest.daynotes,
+                boards: manifest.boards,
+                purged: manifest.purged ?? []
+            )
 
             let data: Data
             if let crypto, !writesPlaintext {
@@ -940,7 +976,43 @@ actor SyncEngine {
         }
         merged.daynotes = Array(notes.values)
         merged.boards = mergeBoardStates(remote: latest.boards, local: local.boards)
+        var purgedByID = Dictionary(uniqueKeysWithValues: (latest.purged ?? []).map { ($0.id, $0.deletedAt) })
+        for item in local.purged ?? [] where item.deletedAt > (purgedByID[item.id] ?? .distantPast) {
+            purgedByID[item.id] = item.deletedAt
+        }
+        merged.purged = purgedByID.map { PurgedEntry(id: $0.key, deletedAt: $0.value) }
+        normalizePurges(&merged)
         return merged
+    }
+
+    /// V3-15：清除记录与 entries 的一致化，保证 revision 稳定且旧客户端陈旧推送
+    /// 不会重新成为活动条目。
+    static func normalizePurges(_ manifest: inout Manifest) {
+        guard let rawPurged = manifest.purged, !rawPurged.isEmpty else {
+            manifest.purged = nil
+            return
+        }
+        var latestByID: [UUID: Date] = [:]
+        for item in rawPurged where item.deletedAt > (latestByID[item.id] ?? .distantPast) {
+            latestByID[item.id] = item.deletedAt
+        }
+        var kept: [PurgedEntry] = []
+        var removedEntryIDs = Set<UUID>()
+        for (id, deletedAt) in latestByID {
+            if let entry = manifest.entries.first(where: { $0.id == id }),
+               !entry.deleted,
+               entry.updatedAt >= deletedAt {
+                // 用户在清除之后主动恢复，视为合法复活。
+                continue
+            }
+            removedEntryIDs.insert(id)
+            kept.append(PurgedEntry(id: id, deletedAt: deletedAt))
+        }
+        if !removedEntryIDs.isEmpty {
+            manifest.entries.removeAll { removedEntryIDs.contains($0.id) }
+        }
+        kept.sort { $0.id.uuidString < $1.id.uuidString }
+        manifest.purged = kept.isEmpty ? nil : kept
     }
 
     /// 删除墓碑优先于同 ID 的活动板块，避免并发提交或未同步设备将已删除板块复活。
@@ -1075,6 +1147,97 @@ actor SyncEngine {
         return count
     }
 
+    /// V3-15：把永久清除记录应用到本地回收站，避免离线设备把过期删除的日记推回。
+    /// 先批量读取本地活动/回收站条目，再逐项写入，避免对每条清除记录重复扫库。
+    private func applyRemotePurges(manifest: inout Manifest, report: inout SyncReport) async throws {
+        var effective = try database.syncStateDAO.purgedEntries()
+        for item in manifest.purged ?? [] {
+            if item.deletedAt > (effective[item.id] ?? .distantPast) {
+                effective[item.id] = item.deletedAt
+            }
+        }
+        guard !effective.isEmpty else { return }
+
+        let remoteLive = Dictionary(
+            uniqueKeysWithValues: manifest.entries.filter { !$0.deleted }.map { ($0.id, $0) }
+        )
+        var restoredIDs: [UUID] = []
+        for (id, deletedAt) in effective {
+            if let remote = remoteLive[id], remote.updatedAt >= deletedAt {
+                // 远端活动版本晚于清除记录，是合法复活；本地表不应继续拦截推送。
+                restoredIDs.append(id)
+            }
+        }
+        if !restoredIDs.isEmpty {
+            try database.syncStateDAO.dropPurged(ids: restoredIDs)
+            for id in restoredIDs { effective.removeValue(forKey: id) }
+            let restored = Set(restoredIDs)
+            manifest.purged = manifest.purged?.filter { !restored.contains($0.id) }
+            Self.normalizePurges(&manifest)
+        }
+
+        let allEntries = try database.entryDAO.timeline(filter: .all) + database.entryDAO.trashedEntries()
+        let localByID = Dictionary(uniqueKeysWithValues: allEntries.map { ($0.id, $0) })
+        var locallyRestoredIDs: [UUID] = []
+        for (id, deletedAt) in effective {
+            if let local = localByID[id], !local.deleted, local.dirty, local.updatedAt >= deletedAt,
+               let baseline = try database.entryDAO.baselineHash(id: id) {
+                var deletedVersion = local
+                deletedVersion.deleted = true
+                let deletedHash = Entry.hash(
+                    title: deletedVersion.title,
+                    body: deletedVersion.body,
+                    bodyRTF: deletedVersion.bodyRTF,
+                    tags: deletedVersion.tags,
+                    mood: deletedVersion.mood,
+                    weather: deletedVersion.weather,
+                    location: deletedVersion.location,
+                    mediaIds: deletedVersion.mediaIds,
+                    boardId: deletedVersion.boardId,
+                    dayDate: deletedVersion.dayDate,
+                    journalDate: deletedVersion.journalDate,
+                    isFavorite: deletedVersion.isFavorite,
+                    isDraft: deletedVersion.isDraft,
+                    deleted: true
+                )
+                if baseline == deletedHash {
+                    // 用户从已应用的回收站中主动恢复：保留活动条目，稍后由推送阶段重新发布。
+                    locallyRestoredIDs.append(id)
+                    continue
+                }
+            }
+            guard let local = localByID[id] else {
+                // 本地已彻底删除：清除待推送墓碑，避免重新制造 entries。
+                try database.entryDAO.dropTombstone(id: id)
+                continue
+            }
+            if !local.deleted {
+                let baseline = try database.entryDAO.baselineHash(id: id)
+                let changed = local.dirty || (baseline != nil && baseline != local.contentHash)
+                if changed {
+                    try await writeConflictCopy(local)
+                    report.conflicts.append(id)
+                }
+                try database.entryDAO.applyRemotePurge(id: id)
+                report.purgedToTrash += 1
+            } else {
+                // 已在回收站也要对齐 dirty/baseline，防止下一轮再次推送。
+                try database.entryDAO.applyRemotePurge(id: id)
+            }
+        }
+        if !locallyRestoredIDs.isEmpty {
+            try database.syncStateDAO.dropPurged(ids: locallyRestoredIDs)
+            let restored = Set(locallyRestoredIDs)
+            manifest.purged = manifest.purged?.filter { !restored.contains($0.id) }
+            Self.normalizePurges(&manifest)
+        }
+        let restored = Set(locallyRestoredIDs)
+        try database.syncStateDAO.recordPurged(
+            effective.filter { !restored.contains($0.key) }
+                .map { PurgedEntry(id: $0.key, deletedAt: $0.value) }
+        )
+    }
+
     private func pullRemoteEntry(_ remote: ManifestEntry) async throws {
         let data = try await provider.get(remote.path)
         let envelope = try decode(EntryEnvelope.self, from: data)
@@ -1098,7 +1261,12 @@ actor SyncEngine {
     // 摘要覆盖 id/归属/哈希/删除状态等全部业务版本信息，任何内容变化都会产生新指纹；
     // 指纹随 manifest 自身传输，比较时与内容重算值对照，不依赖任何本地水位线，
     // 恢复旧库或换新空库也不会盲目跳过拉取。
-    private static func computeRevision(entries: [ManifestEntry], daynotes: [ManifestDayNote], boards: [Board]) -> String {
+    static func computeRevision(
+        entries: [ManifestEntry],
+        daynotes: [ManifestDayNote],
+        boards: [Board],
+        purged: [PurgedEntry] = []
+    ) -> String {
         var lines: [String] = []
         for entry in entries.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
             lines.append("e|\(entry.id.uuidString)|\(entry.boardId.uuidString)|\(entry.dayDate)|\(entry.path)|\(entry.hash)|\(entry.deleted ? 1 : 0)|\(Int(entry.updatedAt.timeIntervalSince1970))|\(entry.deletedAt.map { Int($0.timeIntervalSince1970) } ?? 0)")
@@ -1108,6 +1276,11 @@ actor SyncEngine {
         }
         for board in boards.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
             lines.append("b|\(board.id.uuidString)|\(board.name)|\(board.kind.rawValue)|\(board.sortOrder)|\(board.disallowCloudAI ? 1 : 0)|\(Int(board.updatedAt.timeIntervalSince1970))|\(board.deletedAt.map { Int($0.timeIntervalSince1970) } ?? 0)")
+        }
+        if !purged.isEmpty {
+            for item in purged.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+                lines.append("p|\(item.id.uuidString)|\(Int(item.deletedAt.timeIntervalSince1970))")
+            }
         }
         let digest = SHA256.hash(data: Data(lines.joined(separator: "\n").utf8))
         return "sha256-" + digest.map { String(format: "%02x", $0) }.joined()
@@ -1127,10 +1300,22 @@ actor SyncEngine {
 
     // 裁剪陈旧的删除墓碑：超过保留期的 deleted 条目从索引里移除（只动索引，不碰数据文件），
     // 防止 manifest 随删除积累而无界膨胀。保留期内仍保留墓碑，保证其它设备能同步到删除动作。
-    private func pruneManifest(_ manifest: Manifest, now: Date = Date(), retention: TimeInterval = 90 * 86_400) -> Manifest {
+    private func pruneManifest(_ manifest: Manifest, now: Date = Date(), retention: TimeInterval = 90 * 86_400) throws -> Manifest {
         var manifest = manifest
         let cutoff = now.addingTimeInterval(-retention)
-        manifest.entries.removeAll { $0.deleted && ($0.deletedAt ?? $0.updatedAt) < cutoff }
+        let expired = manifest.entries.filter { $0.deleted && ($0.deletedAt ?? $0.updatedAt) < cutoff }
+        if !expired.isEmpty {
+            let existing = Set((manifest.purged ?? []).map(\.id))
+            let newlyPurged = expired
+                .filter { !existing.contains($0.id) }
+                .map { PurgedEntry(id: $0.id, deletedAt: $0.deletedAt ?? $0.updatedAt) }
+            if !newlyPurged.isEmpty {
+                try database.syncStateDAO.recordPurged(newlyPurged)
+            }
+            manifest.purged = (manifest.purged ?? []) + newlyPurged
+            manifest.entries.removeAll { $0.deleted && ($0.deletedAt ?? $0.updatedAt) < cutoff }
+        }
+        Self.normalizePurges(&manifest)
         return manifest
     }
 
@@ -1279,7 +1464,16 @@ actor SyncEngine {
     /// 彻底删除后条目行已不存在，dirtyEntries 不再包含它；没有墓碑，
     /// 其它设备（以及本机下一轮拉取）会把远端旧对象当新数据拉回来。
     private func pushTombstones(into manifest: inout Manifest) throws {
+        var purged = try database.syncStateDAO.purgedEntries()
+        for item in manifest.purged ?? [] where item.deletedAt > (purged[item.id] ?? .distantPast) {
+            purged[item.id] = item.deletedAt
+        }
         for tombstone in try database.entryDAO.pendingTombstones() {
+            if purged[tombstone.id] != nil {
+                // V3-15：永久清除记录优先于本地墓碑，不能把已清除条目重新塞回索引。
+                try database.entryDAO.dropTombstone(id: tombstone.id)
+                continue
+            }
             if let index = manifest.entries.firstIndex(where: { $0.id == tombstone.id }) {
                 manifest.entries[index] = tombstone
             } else {
@@ -1319,12 +1513,20 @@ actor SyncEngine {
     /// 当前后端。切换后端、后端被部分清空时，这批条目靠这里补传；
     /// 远端已有的条目仍按 dirty 判断，避免每轮全量重推。
     private func buildPushPlan(manifest: Manifest, shouldBootstrapBackend: Bool) throws -> [Entry] {
-        if shouldBootstrapBackend {
-            return try database.entryDAO.timeline(filter: .all)
+        var purged = try database.syncStateDAO.purgedEntries()
+        for item in manifest.purged ?? [] where item.deletedAt > (purged[item.id] ?? .distantPast) {
+            purged[item.id] = item.deletedAt
         }
-        var plan = Dictionary(uniqueKeysWithValues: try database.entryDAO.dirtyEntries().map { ($0.id, $0) })
+        func allowed(_ entry: Entry) -> Bool {
+            guard let deletedAt = purged[entry.id] else { return true }
+            return entry.dirty && !entry.deleted && entry.updatedAt >= deletedAt
+        }
+        if shouldBootstrapBackend {
+            return try database.entryDAO.timeline(filter: .all).filter(allowed)
+        }
+        var plan = Dictionary(uniqueKeysWithValues: try database.entryDAO.dirtyEntries().filter(allowed).map { ($0.id, $0) })
         let remoteLiveIDs = Set(manifest.entries.filter { !$0.deleted }.map(\.id))
-        for entry in try database.entryDAO.timeline(filter: .all) where !remoteLiveIDs.contains(entry.id) {
+        for entry in try database.entryDAO.timeline(filter: .all) where !remoteLiveIDs.contains(entry.id) && allowed(entry) {
             plan[entry.id] = entry
         }
         return plan.values.sorted { $0.updatedAt < $1.updatedAt }

@@ -183,7 +183,8 @@ final class SyncCoordinator: ObservableObject {
                 await MainActor.run {
                     self.syncConflicts = report.conflicts
                     let conflictText = report.conflicts.isEmpty ? "" : "，冲突 \(report.conflicts.count)"
-                    self.syncMessage = "同步完成：推送 \(report.pushed)，拉取 \(report.pulled)，媒体 \(report.mediaUploaded)\(conflictText)。"
+                    let purgedText = report.purgedToTrash == 0 ? "" : "，\(report.purgedToTrash) 篇已在其它设备删除超过 90 天的日记已移入回收站"
+                    self.syncMessage = "同步完成：推送 \(report.pushed)，拉取 \(report.pulled)，媒体 \(report.mediaUploaded)\(conflictText)\(purgedText)。"
                     self.syncProgress = nil
                     WuyanLog.sync.info("同步完成：推送\(report.pushed)，拉取\(report.pulled)，媒体\(report.mediaUploaded)，冲突\(report.conflicts.count)")
                 }

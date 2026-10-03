@@ -15,6 +15,15 @@ struct Manifest: Codable, Equatable {
     /// 的 in-progress 标记。只有对象盘点、转换与验证全部完成后的索引提交才会把它
     /// 清空。旧版 manifest 解码为 nil。
     var migration: RemoteMigrationState?
+    /// V3-15：已过保留期、被移出 entries 的删除记录。只含 id 与删除时间，永久保留。
+    /// Optional 以兼容旧版 manifest；空数组保存时会归一化为 nil。
+    var purged: [PurgedEntry]?
+}
+
+/// V3-15：永久清除记录，不携带正文或媒体信息。
+struct PurgedEntry: Codable, Equatable {
+    var id: UUID
+    var deletedAt: Date
 }
 
 /// C02：远端迁移标记。direction："encrypt"（明文→加密）或 "decrypt"（关闭加密）。
@@ -165,6 +174,8 @@ struct SyncReport: Equatable {
     var mediaUploaded = 0
     /// C01：缺失对象巡检补传的对象数（正文/日札/媒体）。
     var repaired = 0
+    /// V3-15：远端永久清除记录应用到本地回收站的条目数。
+    var purgedToTrash = 0
 }
 
 /// UI-02：归档推送结果——只包含「读回校验通过」的条目/日札快照，

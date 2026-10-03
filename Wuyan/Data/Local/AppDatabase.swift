@@ -228,6 +228,13 @@ public final class AppDatabase {
                 table.primaryKey(["backend", "path"])
             }
         }
+        migrator.registerMigration("v14-sync-purged") { db in
+            // V3-15：永久保留已过期清除记录，防止离线设备把旧日记重新推回远端。
+            try db.create(table: "sync_purged", ifNotExists: true) { table in
+                table.column("entryId", .text).primaryKey()
+                table.column("deletedAt", .datetime).notNull()
+            }
+        }
         return migrator
     }
 }

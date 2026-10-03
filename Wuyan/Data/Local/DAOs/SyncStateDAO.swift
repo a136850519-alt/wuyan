@@ -72,4 +72,45 @@ struct SyncStateDAO {
             }
         }
     }
+
+    // MARK: - V3-15：永久清除记录
+
+    func purgedEntries() throws -> [UUID: Date] {
+        try writer.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT entryId, deletedAt FROM sync_purged")
+            var result: [UUID: Date] = [:]
+            for row in rows {
+                guard let idString: String = row["entryId"],
+                      let id = UUID(uuidString: idString),
+                      let deletedAt: Date = row["deletedAt"]
+                else { continue }
+                result[id] = deletedAt
+            }
+            return result
+        }
+    }
+
+    func recordPurged(_ items: [PurgedEntry]) throws {
+        guard !items.isEmpty else { return }
+        try writer.write { db in
+            for item in items {
+                try db.execute(
+                    sql: """
+                    INSERT INTO sync_purged(entryId, deletedAt) VALUES (?, ?)
+                    ON CONFLICT(entryId) DO UPDATE SET deletedAt = MAX(deletedAt, excluded.deletedAt)
+                    """,
+                    arguments: [item.id.uuidString, item.deletedAt]
+                )
+            }
+        }
+    }
+
+    func dropPurged(ids: [UUID]) throws {
+        guard !ids.isEmpty else { return }
+        try writer.write { db in
+            for id in ids {
+                try db.execute(sql: "DELETE FROM sync_purged WHERE entryId = ?", arguments: [id.uuidString])
+            }
+        }
+    }
 }
