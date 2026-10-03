@@ -34,11 +34,18 @@ actor SyncEngine {
     /// R0-7: 明文→加密迁移标记。当 decodeRaw 检测到远端有明文/旧版数据时设置，
     /// syncNow 完成后会自动重新上传所有条目。
     private var cryptoNeedsReEncrypt = false
+    /// Whether this sync may consume legacy/plaintext remote objects. This is
+    /// decided while loading the manifest, never inferred from an object that
+    /// merely happens to parse as JSON.
+    private var plaintextTolerated = false
     /// B03：加密迁移状态持久化在数据库（sync_state）。密钥头已发布但对象尚未全部
     /// 转换时为 "in-progress"——任何一台设备的后续同步据此强制补完迁移，
     /// 不依赖内存标记或「加密索引存在＝对象已加密」的错误推断。
     private var migrationStateKey: String {
         "sync.cryptoMigration.\(backendFingerprint)"
+    }
+    private var cryptoEstablishedKey: String {
+        "sync.cryptoEstablished.\(backendFingerprint)"
     }
     /// B01：孤儿版本 GC 宽限期（见 init 注释）。
     private let orphanGraceInterval: TimeInterval
@@ -146,6 +153,18 @@ actor SyncEngine {
             // C02：发布的同时把迁移标记写入远端索引本体——迁移状态不再只存在于
             // 原设备数据库，任何持正确口令的设备都能接续完成迁移。
             var manifest = loadedManifest
+            // Closing encryption is a two-phase protocol: publish the decrypt
+            // marker while the index is still encrypted before touching any
+            // object, so another device will not re-encrypt mixed plaintext.
+            if writesPlaintext, manifestExisted,
+               manifest.migration?.direction != RemoteMigrationState.decrypt {
+                manifest.migration = RemoteMigrationState(
+                    direction: RemoteMigrationState.decrypt,
+                    startedAt: Date(),
+                    startedBy: Self.deviceId()
+                )
+                manifest = try await publishEncryptedManifest(manifest, loadedETag: manifestETag)
+            }
             if crypto != nil, !writesPlaintext, cryptoNeedsReEncrypt, manifestExisted {
                 try database.syncStateDAO.set("in-progress", forKey: migrationStateKey)
                 if manifest.migration?.direction != RemoteMigrationState.encrypt {
@@ -396,6 +415,9 @@ actor SyncEngine {
             )
             // B03：本轮同步完整结束（含迁移块全部成功提交）后迁移视为完成。
             try database.syncStateDAO.set(nil, forKey: migrationStateKey)
+            if writesPlaintext {
+                try database.syncStateDAO.set(nil, forKey: cryptoEstablishedKey)
+            }
             progress.completedUnitCount += 1
             progress.phase = "正在记录同步状态"
             await self.report(progress)
@@ -681,6 +703,7 @@ actor SyncEngine {
 
     /// 读取远端索引。返回清单、读取时的版本标识（供条件写）以及远端是否已存在索引。
     private func loadManifest() async throws -> (manifest: Manifest, etag: String?, existed: Bool) {
+        plaintextTolerated = false
         guard try await provider.exists(SyncPaths.manifest) else {
             var manifest = Manifest()
             manifest.boards = Self.mergeBoardStates(
@@ -695,6 +718,20 @@ actor SyncEngine {
             return (manifest, nil, false)
         }
         let snapshot = try await provider.getVersioned(SyncPaths.manifest)
+        let localMigrationInProgress = (try database.syncStateDAO.value(forKey: migrationStateKey)) == "in-progress"
+        let established = (try database.syncStateDAO.value(forKey: cryptoEstablishedKey)) == "1"
+        if crypto != nil {
+            let isV3Container = (try? decoder.decode(ManifestContainer.self, from: snapshot.data))
+                .flatMap { $0.crypto?.wrappedDekBase64 != nil && $0.payloadCiphertextBase64 != nil } ?? false
+            let isLegacyEncrypted = (try? decoder.decode(EncryptedPayload.self, from: snapshot.data)) != nil
+            plaintextTolerated = writesPlaintext || localMigrationInProgress || !established
+                || isLegacyEncrypted
+            if isV3Container {
+                // The encrypted payload is authoritative; decodeManifestContainer
+                // will narrow this to the migration flag carried in its plaintext.
+                plaintextTolerated = writesPlaintext || localMigrationInProgress
+            }
+        }
         return (try decodeManifestData(snapshot.data), snapshot.etag, true)
     }
 
@@ -729,6 +766,7 @@ actor SyncEngine {
                     ifMatch: currentETag,
                     ifNoneMatch: false
                 )
+                try database.syncStateDAO.set("1", forKey: cryptoEstablishedKey)
                 WuyanLog.sync.info("已发布加密索引密钥头，开始迁移远端对象")
                 return current
             } catch let error as RemoteStorageError {
@@ -771,7 +809,11 @@ actor SyncEngine {
             try crypto.unlock(with: header)
             let dek = try crypto.dekForKeyId(header.keyId)
             let plain = try crypto.box.open(ciphertext, key: dek)
-            return try decoder.decode(Manifest.self, from: plain)
+            let manifest = try decoder.decode(Manifest.self, from: plain)
+            try database.syncStateDAO.set("1", forKey: cryptoEstablishedKey)
+            let localMigrationInProgress = (try database.syncStateDAO.value(forKey: migrationStateKey)) == "in-progress"
+            plaintextTolerated = writesPlaintext || manifest.migration != nil || localMigrationInProgress
+            return manifest
         }
         // 2) 旧版整体加密（EncryptedPayload v1/v2 包着 Manifest）——读取后升级重传
         if let payload = try? decoder.decode(EncryptedPayload.self, from: data),
@@ -787,7 +829,10 @@ actor SyncEngine {
             WuyanLog.sync.info("检测到旧版加密索引，将升级为数据密钥格式")
             return try decoder.decode(Manifest.self, from: plain)
         }
-        // 3) 明文 manifest（明文→加密迁移路径）
+        // 3) 明文 manifest is only valid for a first-time/legacy migration.
+        guard plaintextTolerated else {
+            throw SyncError.decryptFailed(reason: "远端索引变成了明文：可能是另一台设备关闭了加密，或远端被篡改。若是前者，请在本机也关闭加密；否则请检查远端存储。")
+        }
         // A04：先恢复/生成数据密钥头（同机重试时还原本机持久化的待提交密钥头）。
         // 即使此前的迁移在发布索引后中断、远端残留了个别密文对象，
         // 本轮读取也能用同一把 DEK 解开，不会卡死在「密钥尚未解锁」。
@@ -859,6 +904,9 @@ actor SyncEngine {
                     ifMatch: etag,
                     ifNoneMatch: !exists
                 )
+                if crypto != nil, !writesPlaintext {
+                    try database.syncStateDAO.set("1", forKey: cryptoEstablishedKey)
+                }
                 return (manifest, mergedForeignRevision)
             } catch let error as RemoteStorageError {
                 guard case .concurrentModification = error, attempt < 2 else { throw error }
@@ -1617,6 +1665,9 @@ actor SyncEngine {
            Data(base64Encoded: payload.ciphertextBase64) != nil {
             return try decodeRaw(data)
         }
+        guard plaintextTolerated else {
+            throw SyncError.decryptFailed(reason: "远端对象不是加密格式，可能被篡改")
+        }
         return data
     }
 
@@ -1763,6 +1814,9 @@ actor SyncEngine {
             } catch {
                 throw SyncError.decryptFailed(reason: "解密失败：口令可能不正确（\(error.localizedDescription)）")
             }
+        }
+        guard plaintextTolerated else {
+            throw SyncError.decryptFailed(reason: "远端对象不是加密格式，可能被篡改")
         }
         // R0-7: 明文→加密迁移宽容处理——如果数据看起来是合法 JSON（明文旧数据），
         // 不直接报错，而是返回明文并设置迁移标记，供调用方后续用加密格式覆盖上传。

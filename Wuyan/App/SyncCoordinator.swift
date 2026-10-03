@@ -11,6 +11,10 @@ final class SyncCoordinator: ObservableObject {
     /// R1-6: 共享 AppState 的 mediaStore，不再独立创建实例
     let mediaStore: LocalMediaStore
     private let rescueMode: Bool
+    /// Result of the manifest format decision used by lazy media downloads.
+    /// It prevents an established encrypted backend from silently accepting a
+    /// plaintext thumbnail/object while still allowing an explicit migration.
+    private var plaintextToleratedForDownloads = false
 
     @Published var syncMessage: String?
     @Published var syncProgress: SyncProgress?
@@ -502,6 +506,9 @@ final class SyncCoordinator: ObservableObject {
         let encPath = SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
 
         if (try? await provider.contentLength(plainPath)) != nil {
+            if crypto != nil, !plaintextToleratedForDownloads {
+                throw SyncError.decryptFailed(reason: "远端对象不是加密格式，可能被篡改")
+            }
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("wuyan-download-\(asset.sha256)")
             // A05：续传下载落位前对照资产 SHA-256，损坏分片拼出的内容不会被当成附件。
@@ -533,8 +540,11 @@ final class SyncCoordinator: ObservableObject {
         if isEncryptedPayload {
             thumbnailData = try decryptRemoteDataIfNeeded(data, crypto: crypto)
         } else {
+            if crypto != nil && !plaintextToleratedForDownloads {
+                throw SyncError.decryptFailed(reason: "远端对象不是加密格式，可能被篡改")
+            }
             if crypto != nil {
-                WuyanLog.media.warning("缩略图不是加密负载，按历史明文对象处理：\(asset.sha256.prefix(8))")
+                WuyanLog.media.warning("缩略图处于允许的迁移明文状态：\(asset.sha256.prefix(8))")
             }
             thumbnailData = data
         }
@@ -545,14 +555,28 @@ final class SyncCoordinator: ObservableObject {
     /// UI-01：媒体下载前确保数据密钥已解锁（从远端索引密钥头读取，按 keyId 缓存，幂等）。
     /// 未启用加密返回 nil；旧版索引（无密钥头）返回未解锁的 crypto，对象按 v1/v2 路径解密。
     private func ensureCryptoUnlocked(provider: any RemoteStorageProvider) async throws -> SyncCrypto? {
+        plaintextToleratedForDownloads = false
         guard let crypto = ProviderFactory.makeSyncCrypto() else { return nil }
         if crypto.currentHeader != nil { return crypto }
         guard try await provider.exists(SyncPaths.manifest) else { return crypto }
         let data = try await provider.get(SyncPaths.manifest)
+        let fingerprint = ProviderFactory.backendFingerprint()
+        let established = (try? db.syncStateDAO.value(forKey: "sync.cryptoEstablished.\(fingerprint)")) == "1"
+        let migrationInProgress = (try? db.syncStateDAO.value(forKey: "sync.cryptoMigration.\(fingerprint)")) == "in-progress"
         if let container = try? JSONDecoder.wuyan.decode(ManifestContainer.self, from: data),
            let header = container.crypto,
            header.wrappedDekBase64 != nil {
             try crypto.unlock(with: header)
+            if let payload = container.payloadCiphertextBase64,
+               let ciphertext = Data(base64Encoded: payload),
+               let plain = try? crypto.box.open(ciphertext, key: crypto.dekForKeyId(header.keyId)),
+               let manifest = try? JSONDecoder.wuyan.decode(Manifest.self, from: plain) {
+                plaintextToleratedForDownloads = migrationInProgress || manifest.migration != nil
+            }
+        } else {
+            // A first-time/legacy plaintext backend is tolerated; once this
+            // fingerprint has established encryption it is a downgrade error.
+            plaintextToleratedForDownloads = !established || migrationInProgress
         }
         return crypto
     }
