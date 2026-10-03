@@ -93,6 +93,7 @@ struct StreakTrackerRegressionTests {
 // 套件时，并行的 @MainActor 同步测试会阻塞在 lock 上占住主线程，本测试挂起后
 // 的恢复也需要主线程，互相等待即死锁。因此隔离容器内只做同步准备，
 // 观察流轮询等异步断言全部放在容器外（只触达内存库，不读全局设置）。
+extension GlobalStateSuite {
 @MainActor
 struct EditorExternalUpdateRegressionTests {
 
@@ -203,4 +204,5 @@ struct EditorExternalUpdateRegressionTests {
         let final = try #require(try fixture.db.entryDAO.entry(id: fixture.entryId))
         #expect(final.body == "后台同步来的第二版")
     }
+}
 }

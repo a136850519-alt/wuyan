@@ -62,10 +62,8 @@ enum TestIsolation {
     }
 
     /// C03：异步测试用例（await 引擎同步）使用同一隔离容器。
-    /// Acquire from a detached waiter so no thread-affine lock spans `await`.
+    /// 只能在 GlobalStateSuite 内使用；父套件的 serialized trait 负责互斥。
     static func withIsolatedDefaults<T>(_ body: (UserDefaults) async throws -> T) async rethrows -> T {
-        await Task.detached { gate.wait() }.value
-        defer { gate.signal() }
         let suite = "wuyan.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         // C03：隔离目录。迁移源目录与媒体根都指向临时目录，
@@ -120,6 +118,11 @@ enum TestIsolation {
         return try body()
     }
 }
+
+/// 读写全局注入点的测试父套件；嵌套套件递归串行，避免默认并行运行时
+/// 互相覆盖 UserDefaults、媒体根目录、Keychain 和迁移注入点。
+@Suite(.serialized)
+enum GlobalStateSuite {}
 
 // MARK: - Mock Remote Storage Provider
 
@@ -236,6 +239,8 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
         "sha256-" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
+
+extension GlobalStateSuite {
 
 // MARK: - Crypto Tests
 
@@ -944,4 +949,6 @@ struct R0_8_ReminderDateTests {
         let date4am = calendar.date(from: components)!
         #expect(DayKey.string(from: date4am) == "2026-07-11")
     }
+}
+
 }

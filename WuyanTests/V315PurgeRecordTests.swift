@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import Wuyan
 
-@Suite("V3-15: Permanent purge records", .serialized)
+extension GlobalStateSuite {
+@Suite("V3-15: Permanent purge records")
 struct V315PurgeRecordTests {
     private func makeEngine(_ db: AppDatabase, _ remote: MockRemoteStorageProvider, fingerprint: String) -> SyncEngine {
         SyncEngine(
@@ -194,4 +195,5 @@ struct V315PurgeRecordTests {
         #expect(manifest.purged?.first { $0.id == deletedID }?.deletedAt == deletedAt)
         #expect(manifest.purged?.contains { $0.id == restoredID } == false)
     }
+}
 }

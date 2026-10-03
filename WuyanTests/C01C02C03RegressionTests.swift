@@ -51,6 +51,7 @@ private func shaHex(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+extension GlobalStateSuite {
 @Suite("C01: Delayed GC object identity")
 struct C01RegressionTests {
 
@@ -341,4 +342,6 @@ struct C03RegressionTests {
             SecureSettings.save("", for: key)
         }
     }
+}
+
 }

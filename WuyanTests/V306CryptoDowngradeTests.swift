@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import Wuyan
 
+extension GlobalStateSuite {
 @Suite("V3-06: Crypto downgrade protection")
 struct V306CryptoDowngradeTests {
     private func seededEntry(_ db: AppDatabase) throws -> Entry {
@@ -70,4 +71,5 @@ struct V306CryptoDowngradeTests {
             }
         }
     }
+}
 }

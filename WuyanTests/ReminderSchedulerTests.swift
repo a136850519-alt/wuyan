@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import Wuyan
 
-@Suite(.serialized)
+extension GlobalStateSuite {
+@Suite("Reminder scheduler")
 struct ReminderSchedulerTests {
     private func localDate(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int) -> Date {
         var calendar = Calendar.current
@@ -57,4 +58,5 @@ struct ReminderSchedulerTests {
             #expect(ids.contains("wuyan.daily.2026-02-01.0"))
         }
     }
+}
 }

@@ -10,6 +10,7 @@ import CryptoKit
 // 导致只缺缩略图时永远补不回。修复后原图与缩略图分开检查；本地原件缺失
 // （懒下载设备只缓存了缩略图）也不再阻断缩略图处理。
 
+extension GlobalStateSuite {
 @Suite("R4-01: Missing-object audit repairs thumbnails independently")
 struct R401ThumbnailAuditTests {
 
@@ -178,4 +179,5 @@ struct R401ThumbnailAuditTests {
             #expect(report.repaired == 1)
         }
     }
+}
 }
