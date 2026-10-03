@@ -111,8 +111,7 @@ final class SyncCoordinator: ObservableObject {
         }
         guard configured else { return }
         guard syncProgress == nil else { return }
-        let archivedYears = UserDefaults.standard.array(forKey: "archive.years") as? [Int] ?? []
-        syncNow(archivedYears: Set(archivedYears))
+        syncNow(archivedYears: Set(AppSettings.archivedYears))
     }
 
     /// R0-5: 加密口令预检。当 cryptoEnabled 时验证口令非空。
@@ -305,18 +304,22 @@ final class SyncCoordinator: ObservableObject {
 
     // MARK: - 归档与下载
 
-    func archiveYearToRemote(_ year: Int, archivedYears: Set<Int>) {
+    @discardableResult
+    func archiveYearToRemote(_ year: Int, archivedYears: Set<Int>) -> Bool {
         guard !rescueMode else {
             setSyncError("救援模式：归档已禁用。")
-            return
+            return false
         }
-        guard syncProgress == nil else { return }
+        guard syncProgress == nil else {
+            setSyncError("同步或其它远端任务进行中，请完成后再归档。")
+            return false
+        }
         syncMessage = "\(year) 年归档中…"
         syncProgress = SyncProgress(phase: "\(year) 年归档准备中", completedUnitCount: 0, totalUnitCount: 1)
         clearSyncError()
 
         // R0-5: 加密守卫——归档前必须验证加密口令
-        guard checkCryptoPassphrase() else { return }
+        guard checkCryptoPassphrase() else { return false }
 
         let provider: any RemoteStorageProvider
         do {
@@ -325,7 +328,7 @@ final class SyncCoordinator: ObservableObject {
             syncMessage = nil
             syncProgress = nil
             setSyncError(error.localizedDescription)
-            return
+            return false
         }
         let database = db
         let mediaStore = mediaStore
@@ -401,6 +404,7 @@ final class SyncCoordinator: ObservableObject {
                 }
             }
         }
+        return true
     }
 
     func downloadYearFromRemote(_ year: Int) {
@@ -408,7 +412,10 @@ final class SyncCoordinator: ObservableObject {
             setSyncError("救援模式：下载已禁用。")
             return
         }
-        guard syncProgress == nil else { return }
+        guard syncProgress == nil else {
+            setSyncError("同步或其它远端任务进行中，请完成后再下载。")
+            return
+        }
         syncMessage = "\(year) 年下载中…"
         syncProgress = SyncProgress(phase: "\(year) 年下载准备中", completedUnitCount: 0, totalUnitCount: 1)
         clearSyncError()

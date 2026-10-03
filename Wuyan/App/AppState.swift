@@ -226,8 +226,10 @@ final class AppState: ObservableObject {
             errorMessage = "已有 \(running) 年归档任务进行中，请等待完成。"
             return
         }
+        guard syncCoordinator.archiveYearToRemote(year, archivedYears: Set(archivedYears)) else { return }
+        // The coordinator creates its Task before returning, so this lock is
+        // installed in the same main-actor turn only after startup is accepted.
         archivingYear = year
-        syncCoordinator.archiveYearToRemote(year, archivedYears: Set(archivedYears))
     }
 
     func downloadYearFromRemote(_ year: Int) {
