@@ -42,7 +42,7 @@ enum SettingKey {
 
     // MARK: - 归档与同步
     // R2-6: 从 AppState/SyncCoordinator 硬编码提取到此
-    static let archivedYears = "archive.years"
+    static let archivedYears = "settings.archive.years"
 }
 
 /// 类型化访问器：读 UserDefaults 时提供默认值，避免散落各处。
@@ -51,6 +51,8 @@ enum AppSettings {
     /// 测试通过 injectDefaultsForTesting 注入随机 suite，保证测试不会
     /// 读写/删除用户真实的偏好配置，也不依赖测试 runner 的默认域。
     private static var defaults: UserDefaults = .standard
+    /// R2-6/V3-16：兼容 1.1.3 及更早版本写入的归档年份 key。
+    private static var legacyArchivedYearsKey: String { "archive.years" }
 
     /// 仅测试目标可调用：注入隔离的 UserDefaults。
     /// 生产代码绝不能调用（调用后设置将不再持久化到用户偏好）。
@@ -161,9 +163,13 @@ enum AppSettings {
     // MARK: - 归档与同步
     // R2-6: 替代 AppState/SyncCoordinator 中的硬编码 "archive.years"
     static var archivedYears: [Int] {
-        defaults.array(forKey: SettingKey.archivedYears) as? [Int] ?? []
+        if let years = defaults.array(forKey: SettingKey.archivedYears) as? [Int] {
+            return years
+        }
+        return defaults.array(forKey: legacyArchivedYearsKey) as? [Int] ?? []
     }
     static func setArchivedYears(_ years: [Int]) {
         defaults.set(years, forKey: SettingKey.archivedYears)
+        defaults.removeObject(forKey: legacyArchivedYearsKey)
     }
 }
