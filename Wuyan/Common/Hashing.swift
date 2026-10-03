@@ -2,6 +2,17 @@ import CryptoKit
 import Foundation
 
 public enum Hashing {
+    /// 以固定大小分块读取文件并计算 SHA-256，避免把大媒体一次性载入内存。
+    public static func sha256Hex(ofFileAt url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func dayNoteHash(_ note: DayNote) -> String {
         let payload = DayNoteHashPayload(
             date: note.date,

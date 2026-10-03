@@ -156,9 +156,8 @@ extension RemoteStorageProvider {
         // A05：能提供预期指纹时，落位前校验整文件 SHA-256。等长损坏、错误旧前缀
         // 等长度无法暴露的问题在这里被拦截。
         if let expectedSHA256 {
-            let data = try Data(contentsOf: partURL)
             do {
-                try Self.verifyChecksum(of: data, expectedSHA256: expectedSHA256, path: path)
+                try Self.verifyChecksum(of: partURL, expectedSHA256: expectedSHA256, path: path)
             } catch {
                 try? fm.removeItem(at: partURL)
                 try? fm.removeItem(at: metaURL)
@@ -168,6 +167,13 @@ extension RemoteStorageProvider {
         try? fm.removeItem(at: fileURL)
         try fm.moveItem(at: partURL, to: fileURL)
         try? fm.removeItem(at: metaURL)
+    }
+
+    private static func verifyChecksum(of fileURL: URL, expectedSHA256: String, path: String) throws {
+        let hex = try Hashing.sha256Hex(ofFileAt: fileURL)
+        guard hex == expectedSHA256.lowercased() else {
+            throw RemoteStorageError.checksumMismatch(path: path, expected: expectedSHA256, actual: hex)
+        }
     }
 
     private static func verifyChecksum(of data: Data, expectedSHA256: String, path: String) throws {

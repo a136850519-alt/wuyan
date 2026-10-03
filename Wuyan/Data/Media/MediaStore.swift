@@ -197,8 +197,8 @@ final class LocalMediaStore: MediaStoreProtocol {
                 } else {
                     // 同名文件已在目标目录时，只有内容完全一致才可视为已迁移。
                     // 不一致必须中止，避免静默覆盖用户文件。
-                    let sourceHash = try fileHash(at: item)
-                    let destinationHash = try fileHash(at: dest)
+                    let sourceHash = try Hashing.sha256Hex(ofFileAt: item)
+                    let destinationHash = try Hashing.sha256Hex(ofFileAt: dest)
                     guard sourceHash == destinationHash else {
                         throw MediaMigrationError.destinationConflict(dest.path)
                     }
@@ -223,16 +223,6 @@ final class LocalMediaStore: MediaStoreProtocol {
             let relative = Self.toRelativePath(absolutePath)
             return relative.isEmpty ? nil : relative
         }
-    }
-
-    private func fileHash(at url: URL) throws -> SHA256.Digest {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize()
     }
 
     // MARK: - MediaStoreProtocol
@@ -306,8 +296,7 @@ final class LocalMediaStore: MediaStoreProtocol {
         try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: local.path) {
             // 内容寻址：已有文件校验一致才复用；不一致说明缓存损坏，必须覆盖。
-            let existing = try Data(contentsOf: local)
-            if try Self.hexDigest(of: existing) != asset.sha256 {
+            if try Hashing.sha256Hex(ofFileAt: local) != asset.sha256 {
                 try data.write(to: local, options: .atomic)
             }
         } else {
@@ -332,15 +321,14 @@ final class LocalMediaStore: MediaStoreProtocol {
         let bucket = mediaURL.appendingPathComponent(String(asset.sha256.prefix(2)), isDirectory: true)
         try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
         let local = bucket.appendingPathComponent(ext.isEmpty ? asset.sha256 : "\(asset.sha256).\(ext)")
-        let tempData = try Data(contentsOf: tempURL)
-        guard try Self.hexDigest(of: tempData) == asset.sha256 else {
+        let tempHash = try Hashing.sha256Hex(ofFileAt: tempURL)
+        guard tempHash == asset.sha256 else {
             try? fileManager.removeItem(at: tempURL)
-            throw RemoteStorageError.checksumMismatch(path: tempURL.path, expected: asset.sha256, actual: try Self.hexDigest(of: tempData))
+            throw RemoteStorageError.checksumMismatch(path: tempURL.path, expected: asset.sha256, actual: tempHash)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: local.path) {
-            let existing = try Data(contentsOf: local)
-            if try Self.hexDigest(of: existing) == asset.sha256 {
+            if try Hashing.sha256Hex(ofFileAt: local) == asset.sha256 {
                 // 缓存完好：丢弃临时文件即可。
             } else {
                 // 缓存损坏：用校验通过的新文件覆盖。

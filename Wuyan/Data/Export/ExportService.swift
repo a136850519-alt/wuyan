@@ -321,10 +321,7 @@ final class ExportService {
                 let targetURL = mediaStore.localMediaURL(for: asset)
                 let existed = fm.fileExists(atPath: targetURL.path)
                 if existed {
-                    let existingData = try Data(contentsOf: targetURL)
-                    let existingSHA = SHA256.hash(data: existingData)
-                        .map { String(format: "%02x", $0) }
-                        .joined()
+                    let existingSHA = try Hashing.sha256Hex(ofFileAt: targetURL)
                     if existingSHA != asset.sha256 {
                         throw BackupError.corruptPackage("本地媒体文件已存在但校验不一致：\(targetURL.path)")
                     }
