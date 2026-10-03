@@ -7,6 +7,7 @@ struct ClaudeProvider: AIProvider {
     var session: URLSession = .shared
 
     var isLocal: Bool { false }
+    var supportsEmbeddings: Bool { false }
 
     var destinationDescription: String {
         "云端 Claude（\(endpoint.absoluteString)，模型 \(model)）"

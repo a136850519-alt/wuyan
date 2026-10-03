@@ -2,6 +2,11 @@ import Foundation
 import os
 
 final class AIService: PoeticGenerator {
+    static let cloudContextMaxEntries = 8
+    static let cloudContextMaxCharactersPerEntry = 1_500
+    static let cloudContextMaxCharacters = 6_000
+    static let summaryContextMaxCharacters = 20_000
+
     var provider: AIProvider?
     var isEnabled: Bool
     var ritualPolishingEnabled: Bool
@@ -66,7 +71,12 @@ final class AIService: PoeticGenerator {
         guard context.recentEntries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
             throw AIError.blockedBySensitiveBoard
         }
-        let recent = safeEntries.map { $0.body }.joined(separator: "\n")
+        let recent = Self.boundedEntries(
+            safeEntries,
+            maxEntries: 5,
+            maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
+            maxCharacters: Self.cloudContextMaxCharacters
+        ).map { $0.body }.joined(separator: "\n")
         do {
             return try await provider.complete([
                 AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
@@ -86,7 +96,12 @@ final class AIService: PoeticGenerator {
         guard context.recentEntries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
             return AsyncThrowingStream { $0.finish(throwing: AIError.blockedBySensitiveBoard) }
         }
-        let recent = safeEntries.map { $0.body }.joined(separator: "\n")
+        let recent = Self.boundedEntries(
+            safeEntries,
+            maxEntries: 5,
+            maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
+            maxCharacters: Self.cloudContextMaxCharacters
+        ).map { $0.body }.joined(separator: "\n")
         return provider.stream([
             AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
             AIMessage(role: .user, content: "最近内容：\n\(recent)")
@@ -101,7 +116,7 @@ final class AIService: PoeticGenerator {
         guard entries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
             return AsyncThrowingStream { $0.finish(throwing: AIError.blockedBySensitiveBoard) }
         }
-        let body = safeEntries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
+        let body = Self.boundedSummary(safeEntries)
         return provider.stream([
             AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
             AIMessage(role: .user, content: body)
@@ -114,7 +129,7 @@ final class AIService: PoeticGenerator {
         guard entries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
             throw AIError.blockedBySensitiveBoard
         }
-        let body = safeEntries.map { "- \($0.title ?? "未命名")：\($0.body)" }.joined(separator: "\n")
+        let body = Self.boundedSummary(safeEntries)
         do {
             return try await provider.complete([
                 AIMessage(role: .system, content: "为私人日记做\(period.rawValue)回顾。输出主题、情绪基调和值得回味的瞬间，中文、温和、不评判。"),
@@ -171,13 +186,14 @@ final class AIService: PoeticGenerator {
         }
         let chunks: [RAGChunk]
         let retrievalWasDegraded: Bool
-        if let store = try? RAGIndexStore(provider: provider),
+        if provider.isLocal && provider.supportsEmbeddings,
+           let store = try? RAGIndexStore(provider: provider),
            let topChunks = try? await store.topChunks(for: question, entries: safeEntries) {
             chunks = topChunks
             retrievalWasDegraded = false
         } else {
             WuyanLog.ai.warning("语义索引不可用，问答将明确降级为按时间顺序的条目上下文")
-            chunks = safeEntries.map {
+            chunks = Self.boundedContext(safeEntries).map {
                 RAGChunk(id: $0.id.uuidString, entryId: $0.id, entryHash: $0.contentHash, text: $0.body, embedding: [], updatedAt: Date())
             }
             retrievalWasDegraded = true
@@ -197,5 +213,54 @@ final class AIService: PoeticGenerator {
             WuyanLog.ai.error("AI 问答请求失败：\(error.localizedDescription)")
             throw error
         }
+    }
+
+    /// V3-02: bound every non-RAG context before it can enter a provider
+    /// request. Entries are newest-first so a long journal cannot crowd out
+    /// the recent context with old content.
+    static func boundedContext(_ entries: [Entry]) -> [Entry] {
+        boundedEntries(
+            entries,
+            maxEntries: cloudContextMaxEntries,
+            maxCharactersPerEntry: cloudContextMaxCharactersPerEntry,
+            maxCharacters: cloudContextMaxCharacters
+        )
+    }
+
+    private static func boundedEntries(
+        _ entries: [Entry],
+        maxEntries: Int,
+        maxCharactersPerEntry: Int,
+        maxCharacters: Int
+    ) -> [Entry] {
+        let sorted = entries.sorted { $0.journalDate > $1.journalDate }
+        var remaining = maxCharacters
+        var result: [Entry] = []
+        for var entry in sorted.prefix(maxEntries) {
+            guard remaining > 0 else { break }
+            let limit = min(maxCharactersPerEntry, remaining)
+            entry.body = String(entry.body.prefix(limit))
+            result.append(entry)
+            remaining -= entry.body.count
+        }
+        return result
+    }
+
+    private static func boundedSummary(_ entries: [Entry]) -> String {
+        let sorted = entries.sorted { $0.journalDate > $1.journalDate }
+        var remaining = summaryContextMaxCharacters
+        var lines: [String] = []
+        var truncated = false
+        for entry in sorted {
+            guard remaining > 0 else { truncated = true; break }
+            let prefix = "- \(entry.title ?? "未命名")："
+            let available = max(0, remaining - prefix.count)
+            let body = String(entry.body.prefix(available))
+            lines.append(prefix + body)
+            remaining -= prefix.count + body.count
+            if body.count < entry.body.count { truncated = true; break }
+        }
+        if truncated { lines.append("[内容已截断]") }
+        return lines.joined(separator: "\n")
     }
 }

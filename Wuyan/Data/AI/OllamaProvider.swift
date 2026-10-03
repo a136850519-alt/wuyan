@@ -10,6 +10,7 @@ struct OllamaProvider: AIProvider {
     /// 仅回环地址（localhost / 127.x / ::1）视为本地；用户填写的局域网或公网地址
     /// 一律按远程服务对待——必须经云 AI 授权确认，且受私密板块过滤约束。
     var isLocal: Bool { Self.isLoopback(endpoint) }
+    var supportsEmbeddings: Bool { true }
 
     static func isLoopback(_ endpoint: URL) -> Bool {
         guard let host = endpoint.host?.lowercased() else { return false }

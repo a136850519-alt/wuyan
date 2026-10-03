@@ -56,7 +56,7 @@ struct CloudAIConsentAlert: ViewModifier {
                 Button("仅本次") { gate.proceedOnce() }
             } message: {
                 // S04/UI-05：明示实际目的地与发送范围
-                Text("发送目的地：\(appState.aiService.consentDestinationIdentifier)。\n发送范围：所选条目的正文、标题、标签等文本内容；已标记「禁止云端 AI」的板块内容会被强制过滤，不会发送。")
+                Text("发送目的地：\(appState.aiService.consentDestinationIdentifier)。\n发送范围：本次功能所需的有限片段——问答最多 8 篇最近条目、写作引导最多 5 篇、月度回顾为近一个月；每篇有长度上限。已标记「禁止云端 AI」的板块不会发送。")
             }
     }
 }

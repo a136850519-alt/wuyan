@@ -2,12 +2,21 @@ import Foundation
 
 protocol AIProvider: Sendable {
     var isLocal: Bool { get }
+    /// Whether this provider can build semantic embeddings without sending
+    /// diary content to an unsupported remote embedding service.
+    var supportsEmbeddings: Bool { get }
     /// S04/UI-05：目的地描述（provider + 实际地址 + 模型），用于授权弹窗明示发送去向，
     /// 并作为会话信任的绑定标识——配置变更后标识变化，旧授权自动失效。
     var destinationDescription: String { get }
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String
     func stream(_ messages: [AIMessage], options: AIOptions) -> AsyncThrowingStream<String, Error>
     func embed(_ texts: [String]) async throws -> [[Float]]
+}
+
+extension AIProvider {
+    /// Keep third-party/test providers source-compatible; opt in explicitly
+    /// when the provider really implements embeddings.
+    var supportsEmbeddings: Bool { false }
 }
 
 struct AIMessage: Codable, Sendable {

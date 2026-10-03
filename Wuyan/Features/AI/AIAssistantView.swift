@@ -97,7 +97,7 @@ struct AIAssistantView: View {
             await MainActor.run {
                 sourceEntryIds = answer.sourceEntryIds
                 retrievalNote = answer.retrievalWasDegraded
-                    ? "语义索引暂不可用，以上结果基于全部条目的顺序上下文。"
+                    ? "当前 AI 服务不支持语义检索，以上回答只基于最近 8 篇条目。"
                     : nil
             }
             return answer.answer
