@@ -587,10 +587,16 @@ struct SettingsView: View {
             if reminderEnabled {
                 let components = reminderTimes.map { Calendar.current.dateComponents([.hour, .minute], from: $0) }
                 await scheduler.setDailyReminders(components)
-                await MainActor.run { setStatus(StatusSection.reminder, "已保存 \(components.count) 个提醒。") }
+                await MainActor.run {
+                    appState.refreshRemindersForToday(force: true)
+                    setStatus(StatusSection.reminder, "已保存 \(components.count) 个提醒。")
+                }
             } else {
                 await scheduler.cancelAll()
-                await MainActor.run { setStatus(StatusSection.reminder, "提醒已关闭。") }
+                await MainActor.run {
+                    appState.refreshRemindersForToday(force: true)
+                    setStatus(StatusSection.reminder, "提醒已关闭。")
+                }
             }
         }
     }

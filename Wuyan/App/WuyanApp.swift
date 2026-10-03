@@ -82,7 +82,7 @@ struct WuyanApp: App {
                 .background(ReopenWindowActionCaptor())
                 .onAppear {
                     // Refill the non-repeating reminder window on every launch.
-                    appState.refreshRemindersForToday()
+                    appState.refreshRemindersForToday(force: true)
                     // 启动后 10 秒自动同步（UI-07：救援模式下禁用同步）
                     if !appState.isRescueMode {
                         appState.syncCoordinator.scheduleStartupSync()
@@ -94,6 +94,7 @@ struct WuyanApp: App {
                 // NSWorkspace posts wake events through its own notification center;
                 // subscribing to NotificationCenter.default can miss the event.
                 .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+                    appState.refreshRemindersForToday(force: true)
                     // 系统从睡眠恢复后自动同步
                     appState.syncCoordinator.handleWakeFromSleep()
                 }

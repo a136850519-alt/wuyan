@@ -61,6 +61,7 @@ final class AppState: ObservableObject {
 
     /// 订阅 SyncCoordinator 的 objectWillChange，使其 @Published 变化能触发本对象 UI 刷新。
     private var syncCancellable: AnyCancellable?
+    private var lastReminderRefresh: (dayKey: String, hasWrittenToday: Bool)?
 
     // R2-6/Q01: 归档年份的读写统一经 AppSettings（SettingKey.archivedYears），
     // AppState 不再直接持有 defaults key。
@@ -262,7 +263,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refreshRemindersForToday() {
+    func refreshRemindersForToday(force: Bool = false) {
         guard AppSettings.reminderEnabled else { return }
         let times = Self.reminderTimesFromDefaults()
         Task {
@@ -270,6 +271,11 @@ final class AppState: ObservableObject {
             // UI-09①：空草稿不算「已写」——今天只有草稿时仍按未写处理
             let todays = (try? entries.timeline(filter: .day(today))) ?? []
             let hasWrittenToday = todays.contains { !$0.isDraft }
+            let key = (today, hasWrittenToday)
+            if !force, lastReminderRefresh?.dayKey == key.0, lastReminderRefresh?.hasWrittenToday == key.1 {
+                return
+            }
+            lastReminderRefresh = key
             await ReminderScheduler().refreshForToday(hasWrittenToday: hasWrittenToday, times: times)
         }
     }
