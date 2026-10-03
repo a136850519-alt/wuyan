@@ -29,6 +29,9 @@ actor SyncEngine {
     private(set) var status: SyncStatus = .idle
     // 本次同步内懒加载的「已上传媒体路径」缓存；跨多次 uploadMedia 复用，避免重复探测/写入。
     private var mediaCache: Set<String>?
+    /// V3-11：本轮加密迁移已将远端媒体改写为目标格式。后续迁移推送只需
+    /// 补齐远端缺失对象，不再把每个本地媒体再上传一遍。
+    private var remoteMediaMigrated = false
     /// 后端指纹：用于区分不同的远端配置（避免切换 NAS/账号后旧水位线跳过拉取）
     private let backendFingerprint: String
     /// R0-7: 明文→加密迁移标记。当 decodeRaw 检测到远端有明文/旧版数据时设置，
@@ -100,6 +103,7 @@ actor SyncEngine {
 
     func syncNow() async throws -> SyncReport {
         status = .syncing
+        remoteMediaMigrated = false
         var progress = SyncProgress(phase: "准备同步", completedUnitCount: 0, totalUnitCount: 7)
         do {
             await self.report(progress)
@@ -342,6 +346,7 @@ actor SyncEngine {
                 )
                 var migrationReport = SyncReport()
                 try await migrateRemoteObjects(in: manifest, toPlaintext: writesPlaintext)
+                remoteMediaMigrated = true
                 _ = try await pushDirtyEntries(
                     allEntries, into: &manifest, report: &migrationReport, progress: &migrationProgress,
                     pendingCleans: &pendingCleans, pushedPaths: &pushedEntryPaths
@@ -1682,7 +1687,7 @@ actor SyncEngine {
             let remotePath = crypto == nil || writesPlaintext
                 ? SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
                 : SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
-            let forceMediaRewrite = writesPlaintext || cryptoNeedsReEncrypt
+            let forceMediaRewrite = (writesPlaintext || cryptoNeedsReEncrypt) && !remoteMediaMigrated
             // 内容寻址媒体一旦上传就永久存在：命中缓存直接跳过；未命中才探测一次远端，
             // 探测结果（在或刚传）都记进缓存，后续同步不再逐个 PROPFIND。
             let needsMediaUpload: Bool
@@ -1708,10 +1713,10 @@ actor SyncEngine {
                 mediaCache?.insert(remotePath)
             }
 
-            if writesPlaintext {
+            if writesPlaintext && !remoteMediaMigrated {
                 // 迁移完成后清理同一媒体的旧密文对象，避免关闭加密后仍保留可读密文。
                 try await provider.delete(SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename))
-            } else if cryptoNeedsReEncrypt {
+            } else if cryptoNeedsReEncrypt && !remoteMediaMigrated {
                 // 明文→加密迁移成功写入密文后，删除同一对象的旧明文副本。
                 try await provider.delete(SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename))
             }
@@ -1719,9 +1724,9 @@ actor SyncEngine {
             if asset.thumbnailPath != nil, let absoluteThumbnailPath = asset.absoluteThumbnailPath {
                 // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
                 let thumbnailRemotePath = SyncPaths.thumbnailPath(sha256: asset.sha256)
-                if writesPlaintext || cryptoNeedsReEncrypt || !cache.contains(thumbnailRemotePath) {
+                if (!remoteMediaMigrated && (writesPlaintext || cryptoNeedsReEncrypt)) || !cache.contains(thumbnailRemotePath) {
                     let thumbnailExists = try await provider.exists(thumbnailRemotePath)
-                    if writesPlaintext || cryptoNeedsReEncrypt || !thumbnailExists {
+                    if (!remoteMediaMigrated && (writesPlaintext || cryptoNeedsReEncrypt)) || !thumbnailExists {
                         try await provider.mkcolRecursive("/Wuyan/media/thumbnails/")
                         if crypto == nil || writesPlaintext {
                             try await provider.putChunked(thumbnailRemotePath, fileURL: URL(fileURLWithPath: absoluteThumbnailPath), chunkSize: 512 * 1024)
