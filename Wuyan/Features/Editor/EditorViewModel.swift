@@ -128,6 +128,30 @@ final class EditorViewModel: ObservableObject {
         longitude = fetched.location.map { String($0.lon) } ?? ""
     }
 
+    /// Fields owned by the editor. Metadata and attachment changes can be
+    /// rebased without replacing text currently being edited.
+    private static func editorFieldsEqual(_ a: Entry, _ b: Entry) -> Bool {
+        a.title == b.title && a.body == b.body && a.bodyRTF == b.bodyRTF &&
+            a.tags == b.tags && a.mood == b.mood && a.journalDate == b.journalDate &&
+            a.dayDate == b.dayDate && a.isFavorite == b.isFavorite &&
+            a.boardId == b.boardId && a.deleted == b.deleted
+    }
+
+    /// Move the database base forward while retaining editor-owned fields.
+    private func rebase(onto fetched: Entry) {
+        guard let appState else { return }
+        entry = fetched
+        loadedContentHash = fetched.contentHash
+        mediaAssets = (try? appState.db.mediaAssetDAO.assets(for: fetched.id)) ?? mediaAssets
+        isLoading = true
+        defer { isLoading = false }
+        weatherCondition = fetched.weather?.condition ?? ""
+        weatherTemp = fetched.weather.map { String(format: "%.1f", $0.tempC) } ?? ""
+        placeName = fetched.location?.placeName ?? ""
+        latitude = fetched.location.map { String($0.lat) } ?? ""
+        longitude = fetched.location.map { String($0.lon) } ?? ""
+    }
+
     func saveNow(appState: AppState) {
         // UI-07：救援模式下数据库不可信，禁止制造「已保存」假象
         guard !appState.isRescueMode else {
@@ -153,8 +177,32 @@ final class EditorViewModel: ObservableObject {
             // 通知自动同步防抖：编辑保存后 5 分钟自动同步
             appState.syncCoordinator.notifyEditCompleted()
         } catch EntrySaveError.concurrentModification {
-            // 自动保存每 0.5 秒重试一次，冲突走全局弹窗会反复轰炸；
-            // 改为暂停自动保存并在编辑器内亮横幅，由用户决定保留方向。
+            // The observation stream may arrive after this save. If only
+            // metadata/attachments changed, rebase and retry once immediately.
+            if let fresh = try? appState.entries.entry(id: entry.id),
+               let current = self.entry,
+               Self.editorFieldsEqual(fresh, current) {
+                rebase(onto: fresh)
+                var retry = fresh
+                applyEditorFields(to: &retry)
+                do {
+                    try appState.entries.save(retry, expectedContentHash: fresh.contentHash)
+                    self.entry = try appState.entries.entry(id: retry.id) ?? retry
+                    loadedContentHash = self.entry?.contentHash
+                    isDirty = false
+                    externalUpdateDetected = false
+                    lastSavedAt = Date()
+                    appState.refreshRemindersForToday()
+                    appState.syncCoordinator.notifyEditCompleted()
+                    return
+                } catch EntrySaveError.concurrentModification {
+                    // A second concurrent edit is a real conflict; preserve it
+                    // through the regular banner/flush path below.
+                } catch {
+                    appState.errorMessage = error.localizedDescription
+                    return
+                }
+            }
             markExternalUpdateDetected()
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -222,7 +270,12 @@ final class EditorViewModel: ObservableObject {
                 }
                 await MainActor.run {
                     if self.entry?.id == targetId {
-                        self.load(id: targetId, appState: appState)
+                        if self.isDirty,
+                           let latest = try? appState.entries.entry(id: targetId) {
+                            self.rebase(onto: latest)
+                        } else {
+                            self.load(id: targetId, appState: appState)
+                        }
                     }
                 }
             } catch {
@@ -329,6 +382,43 @@ final class EditorViewModel: ObservableObject {
         saveTask?.cancel()
         saveTask = nil
         saveNow(appState: appState)
+        if isDirty {
+            preserveUnsavedEdits(appState: appState)
+        }
+    }
+
+    /// Persist a draft when a conflict prevents the normal save. This runs for
+    /// every flush entry point so switching views or terminating cannot discard
+    /// the user's text.
+    private func preserveUnsavedEdits(appState: AppState) {
+        guard var draft = entry, isDirty else { return }
+        applyEditorFields(to: &draft)
+        draft.refreshForSave()
+        do {
+            let board = try appState.boards.board(id: draft.boardId)
+            let assets = mediaAssets
+            let envelope = try JSONEncoder.wuyan.encode(
+                EntryEnvelope(entry: draft, board: board, dayNote: nil, mediaAssets: assets)
+            )
+            if try !appState.entries.hasConflictCopy(id: draft.id) {
+                try appState.entries.saveConflictCopy(entry: draft, envelope: envelope, remotePath: "local-editor")
+                let label = draft.title ?? String(draft.body.prefix(20))
+                appState.errorMessage = "「\(label)」在后台被更新，你尚未保存的修改已另存，可在『设置 › 冲突列表』中对比恢复。"
+            } else {
+                var detached = draft
+                detached.id = UUID()
+                detached.title = "【未保存的编辑】" + (draft.title ?? "")
+                detached.mediaIds = []
+                detached.refreshForSave()
+                try appState.entries.saveResolvedConflict(
+                    entry: detached, board: board, dayNote: nil, mediaAssets: []
+                )
+                let label = draft.title ?? String(draft.body.prefix(20))
+                appState.errorMessage = "「\(label)」已有待处理冲突，未保存的修改已另存为新日记「\(detached.title ?? "未保存的编辑")」。"
+            }
+        } catch {
+            appState.errorMessage = "未保存的编辑无法留档：\(error.localizedDescription)"
+        }
     }
 
     /// 切换观察目标。观察流在数据库事务提交时逐条回报，循环体在主 actor 上执行。
@@ -352,6 +442,8 @@ final class EditorViewModel: ObservableObject {
         guard fetched.contentHash != loadedContentHash else { return }
         if !isDirty {
             apply(fetched)
+        } else if let current = entry, Self.editorFieldsEqual(fetched, current) {
+            rebase(onto: fetched)
         } else if !externalUpdateDetected {
             markExternalUpdateDetected()
         }
