@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import Security
 
 /// 远端存储/AI/加密 的工厂方法：从 UserDefaults + Keychain 读取配置并构建 provider 实例。
 enum ProviderFactory {
@@ -85,21 +84,11 @@ enum ProviderFactory {
         guard AppSettings.cryptoEnabled else { return nil }
         let passphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
         guard !passphrase.isEmpty else { return nil }
-        let salt: Data
-        if let existing = AppSettings.cryptoSalt, let data = Data(base64Encoded: existing) {
-            salt = data
-        } else {
-            var bytes = [UInt8](repeating: 0, count: 16)
-            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-                WuyanLog.security.error("生成同步加密盐失败，已拒绝启用加密")
-                return nil
-            }
-            salt = Data(bytes)
-            UserDefaults.standard.set(salt.base64EncodedString(), forKey: SettingKey.cryptoSalt)
-        }
-        return try? SyncCrypto(
+        // Use the designated initializer. KDF work is deferred until a remote
+        // header is actually unlocked (the compatibility convenience
+        // initializer eagerly derives a legacy key).
+        return SyncCrypto(
             passphrase: passphrase,
-            salt: salt,
             persistenceKey: "sync.pendingCryptoHeader.\(backendFingerprint())"
         )
     }

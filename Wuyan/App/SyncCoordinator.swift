@@ -15,6 +15,7 @@ final class SyncCoordinator: ObservableObject {
     /// It prevents an established encrypted backend from silently accepting a
     /// plaintext thumbnail/object while still allowing an explicit migration.
     private var plaintextToleratedForDownloads = false
+    private var unlockedCrypto: (fingerprint: String, passphraseDigest: String, crypto: SyncCrypto)?
 
     @Published var syncMessage: String?
     @Published var syncProgress: SyncProgress?
@@ -239,6 +240,7 @@ final class SyncCoordinator: ObservableObject {
                     newPassphrase: newPassphrase
                 )
                 await MainActor.run {
+                    self.unlockedCrypto = nil
                     completion?(rewrote ? "口令已更换：数据密钥已用新口令重新包装，日记数据无需重传。" : "口令已保存：远端还没有加密索引，将在下次加密同步时生效。")
                 }
             } catch {
@@ -261,6 +263,7 @@ final class SyncCoordinator: ObservableObject {
             completion?("同步进行中，请稍后再试。")
             return
         }
+        unlockedCrypto = nil
         guard let crypto = ProviderFactory.makeSyncCrypto() else {
             completion?("未找到加密口令，无法读取远端密文。")
             return
@@ -292,6 +295,7 @@ final class SyncCoordinator: ObservableObject {
                 _ = try await engine.syncNow()
                 UserDefaults.standard.set(false, forKey: SettingKey.cryptoEnabled)
                 await MainActor.run {
+                    self.unlockedCrypto = nil
                     self.syncProgress = nil
                     self.syncMessage = "已关闭加密：远端数据已全部迁移为明文。"
                     completion?("已关闭加密：远端数据已全部迁移为明文。")
@@ -439,8 +443,9 @@ final class SyncCoordinator: ObservableObject {
         let database = db
         let fingerprint = ProviderFactory.backendFingerprint()
         Task {
-            let crypto = ProviderFactory.makeSyncCrypto()
             do {
+                let crypto = self.cachedSyncCrypto()
+                let unlocked = try await self.ensureCryptoUnlocked(provider: provider, crypto: crypto)
                 let engine = SyncEngine(provider: provider, database: database, crypto: crypto, archivedYears: Set(), backendFingerprint: fingerprint) { progress in
                     await MainActor.run {
                         self.publish(progress: progress, message: "\(year) 年下载：\(progress.phase)")
@@ -467,11 +472,11 @@ final class SyncCoordinator: ObservableObject {
                     }
                     let assets = try database.mediaAssetDAO.allAssets(for: entry.mediaIds)
                     for asset in assets {
-                        if try await downloadMediaIfNeeded(asset) != nil {
+                        if try await downloadMediaIfNeeded(asset, provider: provider, crypto: unlocked) != nil {
                             downloaded += 1
                         }
                         if asset.type == .photo, asset.thumbnailPath == nil {
-                            _ = try? await downloadThumbnailIfNeeded(asset)
+                            _ = try? await downloadThumbnailIfNeeded(asset, provider: provider, crypto: unlocked)
                         }
                     }
                 }
@@ -501,7 +506,15 @@ final class SyncCoordinator: ObservableObject {
         }
 
         let provider = try ProviderFactory.makeRemoteStorageProvider()
-        let crypto = try await ensureCryptoUnlocked(provider: provider)
+        let crypto = try await ensureCryptoUnlocked(provider: provider, crypto: cachedSyncCrypto())
+        return try await downloadMediaIfNeeded(asset, provider: provider, crypto: crypto)
+    }
+
+    private func downloadMediaIfNeeded(
+        _ asset: MediaAsset,
+        provider: any RemoteStorageProvider,
+        crypto: SyncCrypto?
+    ) async throws -> URL? {
         let plainPath = SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
         let encPath = SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
 
@@ -520,7 +533,11 @@ final class SyncCoordinator: ObservableObject {
         return try mediaStore.storeRemoteMedia(try decryptRemoteDataIfNeeded(data, crypto: crypto), for: asset)
     }
 
-    private func downloadThumbnailIfNeeded(_ asset: MediaAsset) async throws -> Bool {
+    private func downloadThumbnailIfNeeded(
+        _ asset: MediaAsset,
+        provider: any RemoteStorageProvider,
+        crypto: SyncCrypto?
+    ) async throws -> Bool {
         // R2-1: 使用模型层计算属性替代 LocalMediaStore.resolvePath
         if let absolutePath = asset.absoluteThumbnailPath {
             if FileManager.default.fileExists(atPath: absolutePath) {
@@ -528,8 +545,6 @@ final class SyncCoordinator: ObservableObject {
             }
         }
 
-        let provider = try ProviderFactory.makeRemoteStorageProvider()
-        let crypto = try await ensureCryptoUnlocked(provider: provider)
         let data = try await provider.get(SyncPaths.thumbnailPath(sha256: asset.sha256))
         // S02：加密模式下缩略图以加密负载形式上传，下载侧必须对称解密。
         // 仅当数据「无法解析为加密负载」时按历史明文对象处理（启用加密前的旧缩略图）；
@@ -554,10 +569,15 @@ final class SyncCoordinator: ObservableObject {
 
     /// UI-01：媒体下载前确保数据密钥已解锁（从远端索引密钥头读取，按 keyId 缓存，幂等）。
     /// 未启用加密返回 nil；旧版索引（无密钥头）返回未解锁的 crypto，对象按 v1/v2 路径解密。
-    private func ensureCryptoUnlocked(provider: any RemoteStorageProvider) async throws -> SyncCrypto? {
+    private func ensureCryptoUnlocked(
+        provider: any RemoteStorageProvider,
+        crypto suppliedCrypto: SyncCrypto? = nil
+    ) async throws -> SyncCrypto? {
         plaintextToleratedForDownloads = false
-        guard let crypto = ProviderFactory.makeSyncCrypto() else { return nil }
-        if crypto.currentHeader != nil { return crypto }
+        guard let crypto = suppliedCrypto ?? cachedSyncCrypto() else { return nil }
+        if crypto.currentHeader != nil {
+            return crypto
+        }
         guard try await provider.exists(SyncPaths.manifest) else { return crypto }
         let data = try await provider.get(SyncPaths.manifest)
         let fingerprint = ProviderFactory.backendFingerprint()
@@ -566,7 +586,9 @@ final class SyncCoordinator: ObservableObject {
         if let container = try? JSONDecoder.wuyan.decode(ManifestContainer.self, from: data),
            let header = container.crypto,
            header.wrappedDekBase64 != nil {
-            try crypto.unlock(with: header)
+            try await Task.detached(priority: .userInitiated) {
+                try crypto.unlock(with: header)
+            }.value
             if let payload = container.payloadCiphertextBase64,
                let ciphertext = Data(base64Encoded: payload),
                let plain = try? crypto.box.open(ciphertext, key: crypto.dekForKeyId(header.keyId)),
@@ -578,6 +600,32 @@ final class SyncCoordinator: ObservableObject {
             // fingerprint has established encryption it is a downgrade error.
             plaintextToleratedForDownloads = !established || migrationInProgress
         }
+        return crypto
+    }
+
+    private func cachedSyncCrypto() -> SyncCrypto? {
+        guard AppSettings.cryptoEnabled else {
+            unlockedCrypto = nil
+            return nil
+        }
+        let passphrase = SecureSettings.load(
+            SecureSettingKey.syncPassphrase,
+            legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase
+        )
+        guard !passphrase.isEmpty else {
+            unlockedCrypto = nil
+            return nil
+        }
+        let fingerprint = ProviderFactory.backendFingerprint()
+        let digest = SHA256.hash(data: Data(passphrase.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        if let cached = unlockedCrypto,
+           cached.fingerprint == fingerprint,
+           cached.passphraseDigest == digest {
+            return cached.crypto
+        }
+        guard let crypto = ProviderFactory.makeSyncCrypto() else { return nil }
+        unlockedCrypto = (fingerprint, digest, crypto)
         return crypto
     }
 
@@ -598,6 +646,10 @@ final class SyncCoordinator: ObservableObject {
             }
             return try crypto.box.open(ciphertext, key: key)
         } catch let e as SyncError {
+            if case let .decryptFailed(reason) = e,
+               reason.contains("未知的数据密钥") || reason.contains("密钥尚未解锁") {
+                unlockedCrypto = nil
+            }
             throw e
         } catch {
             throw SyncError.decryptFailed(reason: "媒体解密失败：\(error.localizedDescription)")
