@@ -9,14 +9,21 @@ import CryptoKit
 /// AppSettings、SecureSettings（Keychain + legacy defaults）、AppMigrationRunner、
 /// LocalMediaStore 的迁移标记与目录、ProviderFactory 的 AI provider、SyncCrypto
 /// 的待提交密钥头域共享同一个随机 suite，绝不读写用户真实偏好域、真实 Keychain、
-/// 真实媒体库或真实 Caches，结束即清理。全局注入点是共享可变状态，用锁串行化
+/// 真实媒体库或真实 Caches，结束即清理。全局注入点是共享可变状态，用串行门闩
 /// 避免并行测试互相干扰。
 enum TestIsolation {
-    private static let lock = NSLock()
+    /// Unlike NSLock, a semaphore can be acquired before an async body and
+    /// released after suspension without requiring the same thread to unlock it.
+    private static let gate = DispatchSemaphore(value: 1)
+
+    /// Marker suite for global-state tests. Suites that touch injected globals
+    /// should be nested here as the test suite is expanded.
+    @Suite(.serialized)
+    enum GlobalStateSuite {}
 
     static func withIsolatedDefaults<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
+        gate.wait()
+        defer { gate.signal() }
         let suite = "wuyan.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         // C03：隔离目录。迁移源目录与媒体根都指向临时目录，
@@ -55,9 +62,10 @@ enum TestIsolation {
     }
 
     /// C03：异步测试用例（await 引擎同步）使用同一隔离容器。
+    /// Acquire from a detached waiter so no thread-affine lock spans `await`.
     static func withIsolatedDefaults<T>(_ body: (UserDefaults) async throws -> T) async rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
+        await Task.detached { gate.wait() }.value
+        defer { gate.signal() }
         let suite = "wuyan.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         // C03：隔离目录。迁移源目录与媒体根都指向临时目录，
@@ -96,8 +104,8 @@ enum TestIsolation {
     }
 
     static func withIsolatedKeychain<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
+        gate.wait()
+        defer { gate.signal() }
         // Q01：凭据迁移的「读取—迁移—清理」整条链路共享同一隔离容器，
         // SecureSettings 内部不再触碰生产 UserDefaults/Keychain。
         let suite = "wuyan.tests." + UUID().uuidString
@@ -651,49 +659,55 @@ struct MediaPathTests {
 
     @Test("Relative path roundtrip via model computed properties")
     func relativePathRoundtripViaModel() {
-        let absolute = LocalMediaStore.mediaRootURL
-            .appendingPathComponent("media/ab/cdef1234.jpg").path
-        let relative = LocalMediaStore.toRelativePath(absolute)
-        #expect(relative == "media/ab/cdef1234.jpg")
+        TestIsolation.withIsolatedDefaults { _ in
+            let absolute = LocalMediaStore.mediaRootURL
+                .appendingPathComponent("media/ab/cdef1234.jpg").path
+            let relative = LocalMediaStore.toRelativePath(absolute)
+            #expect(relative == "media/ab/cdef1234.jpg")
 
-        // R2-1: 测试 MediaAsset 计算属性（收口后的唯一外部接口）
-        var asset = MediaAsset(
-            entryId: UUID(), type: .photo, filename: "test.jpg",
-            mime: "image/jpeg", size: 100, sha256: "abc"
-        )
-        asset.localPath = relative
-        #expect(asset.absoluteLocalPath == absolute)
+            // R2-1: 测试 MediaAsset 计算属性（收口后的唯一外部接口）
+            var asset = MediaAsset(
+                entryId: UUID(), type: .photo, filename: "test.jpg",
+                mime: "image/jpeg", size: 100, sha256: "abc"
+            )
+            asset.localPath = relative
+            #expect(asset.absoluteLocalPath == absolute)
 
-        asset.thumbnailPath = relative
-        #expect(asset.absoluteThumbnailPath == absolute)
+            asset.thumbnailPath = relative
+            #expect(asset.absoluteThumbnailPath == absolute)
+        }
     }
 
     @Test("Resolve absolute path passes through via model")
     func resolveAbsolutePathPassthroughViaModel() {
-        // R2-1 安全护栏：媒体根之外的绝对路径一律拒绝；根内的绝对路径原样通过。
-        let absolute = LocalMediaStore.mediaRootURL
-            .appendingPathComponent("media/ab/old.jpg").path
-        var asset = MediaAsset(
-            entryId: UUID(), type: .photo, filename: "test.jpg",
-            mime: "image/jpeg", size: 100, sha256: "abc"
-        )
-        asset.localPath = absolute
-        #expect(asset.absoluteLocalPath == absolute)
+        TestIsolation.withIsolatedDefaults { _ in
+            // R2-1 安全护栏：媒体根之外的绝对路径一律拒绝；根内的绝对路径原样通过。
+            let absolute = LocalMediaStore.mediaRootURL
+                .appendingPathComponent("media/ab/old.jpg").path
+            var asset = MediaAsset(
+                entryId: UUID(), type: .photo, filename: "test.jpg",
+                mime: "image/jpeg", size: 100, sha256: "abc"
+            )
+            asset.localPath = absolute
+            #expect(asset.absoluteLocalPath == absolute)
 
-        // 根外的绝对路径必须被拒绝（返回空，不解析为可访问路径）。
-        var outside = asset
-        outside.localPath = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
-        #expect(outside.absoluteLocalPath == nil)
+            // 根外的绝对路径必须被拒绝（返回空，不解析为可访问路径）。
+            var outside = asset
+            outside.localPath = "/Users/test/Library/Caches/Wuyan/media/ab/old.jpg"
+            #expect(outside.absoluteLocalPath == nil)
+        }
     }
 
     @Test("Nil paths return nil")
     func resolveNilPathReturnsNilViaModel() {
-        let asset = MediaAsset(
-            entryId: UUID(), type: .photo, filename: "test.jpg",
-            mime: "image/jpeg", size: 100, sha256: "abc"
-        )
-        #expect(asset.absoluteLocalPath == nil)
-        #expect(asset.absoluteThumbnailPath == nil)
+        TestIsolation.withIsolatedDefaults { _ in
+            let asset = MediaAsset(
+                entryId: UUID(), type: .photo, filename: "test.jpg",
+                mime: "image/jpeg", size: 100, sha256: "abc"
+            )
+            #expect(asset.absoluteLocalPath == nil)
+            #expect(asset.absoluteThumbnailPath == nil)
+        }
     }
 }
 
