@@ -422,13 +422,49 @@ final class ExportService {
 
     /// 还原前快照：用 GRDB backup API 把当前库一致性地复制到 snapshots/（含回退材料）。
     static func snapshotDatabase(database: AppDatabase) throws -> URL {
-        let base = LocalMediaStore.mediaRootURL.deletingLastPathComponent()
-        let directory = base.appendingPathComponent("snapshots", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let mediaRoot = LocalMediaStore.mediaRootURL
+        let directory = mediaRoot.appendingPathComponent("snapshots", isDirectory: true)
+        try migrateLegacySnapshots(from: mediaRoot.deletingLastPathComponent().appendingPathComponent("snapshots", isDirectory: true), to: directory, fileManager: fm)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("pre-restore-\(Int(Date().timeIntervalSince1970)).sqlite")
         let target = try DatabaseQueue(path: url.path)
         try database.writer.backup(to: target)
+        let snapshots = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+            .filter { isRestoreSnapshot($0.lastPathComponent) }
+            .sorted { lhs, rhs in
+                let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return left > right
+            }
+        for old in snapshots.dropFirst(5) {
+            try? fm.removeItem(at: old)
+        }
         return url
+    }
+
+    private static func isRestoreSnapshot(_ name: String) -> Bool {
+        name.hasPrefix("pre-restore-") && name.hasSuffix(".sqlite")
+    }
+
+    /// Move only snapshots created by Wuyan out of the legacy shared directory.
+    /// Other applications may use that directory, so unrelated files stay put.
+    private static func migrateLegacySnapshots(from legacy: URL, to destination: URL, fileManager: FileManager) throws {
+        guard legacy.standardizedFileURL != destination.standardizedFileURL,
+              fileManager.fileExists(atPath: legacy.path)
+        else { return }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let candidates = try fileManager.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            .filter { isRestoreSnapshot($0.lastPathComponent) }
+        for file in candidates {
+            let target = destination.appendingPathComponent(file.lastPathComponent)
+            guard !fileManager.fileExists(atPath: target.path) else { continue }
+            try fileManager.moveItem(at: file, to: target)
+        }
+        let remaining = try fileManager.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        if remaining.isEmpty {
+            try? fileManager.removeItem(at: legacy)
+        }
     }
 
     func importJSON(from url: URL, database: AppDatabase) throws -> Int {
