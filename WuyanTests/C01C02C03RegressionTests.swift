@@ -249,6 +249,37 @@ struct C02RegressionTests {
 
 @Suite("C03: Unified test isolation for AppState construction")
 struct C03RegressionTests {
+    @Test("Rescue mode does not run media migration")
+    func rescueModeSkipsMigration() async throws {
+        try await TestIsolation.withIsolatedDefaults { defaults in
+            let tempRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wuyan-c03-rescue-\(UUID().uuidString)", isDirectory: true)
+            let fakeCaches = tempRoot.appendingPathComponent("Caches", isDirectory: true)
+            let fakeMediaRoot = tempRoot.appendingPathComponent("MediaRoot", isDirectory: true)
+            LocalMediaStore.injectCachesSourceForTesting(fakeCaches)
+            LocalMediaStore.injectMediaRootForTesting(fakeMediaRoot)
+            defer {
+                LocalMediaStore.injectCachesSourceForTesting(nil)
+                LocalMediaStore.injectMediaRootForTesting(nil)
+                try? FileManager.default.removeItem(at: tempRoot)
+            }
+            let oldMedia = fakeCaches.appendingPathComponent("Wuyan/media", isDirectory: true)
+            try FileManager.default.createDirectory(at: oldMedia, withIntermediateDirectories: true)
+            let sentinel = oldMedia.appendingPathComponent("sentinel.jpg")
+            try Data("sentinel".utf8).write(to: sentinel)
+
+            let versionBefore = AppMigrationRunner.currentVersion
+            let db = try AppDatabase.makeInMemory()
+            await MainActor.run {
+                _ = AppState(database: db, rescueMode: true)
+            }
+
+            #expect(FileManager.default.fileExists(atPath: sentinel.path))
+            #expect(AppMigrationRunner.currentVersion == versionBefore)
+            #expect(!defaults.bool(forKey: "wuyan.media.migratedFromCaches"))
+        }
+    }
+
 
     /// AppState 构造触发的完整链路（迁移源目录、媒体根、Keychain、AI provider）
     /// 全部走注入点；合成哨兵只会在临时目录之间移动，真实 Caches 不可达。

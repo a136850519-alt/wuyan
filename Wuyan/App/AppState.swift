@@ -103,8 +103,10 @@ final class AppState: ObservableObject {
 
         // R2-3: 通过 AppMigrationRunner 触发媒体 Caches 迁移（v2）
         // 这里只执行 v2 迁移，v1（Keychain）已在 WuyanApp.init 中执行
-        AppMigrationRunner.run { [mediaStore] in
-            try mediaStore.performCachesMigration()
+        if !rescueMode {
+            AppMigrationRunner.run { [mediaStore] in
+                try mediaStore.performCachesMigration()
+            }
         }
 
         // R0-1: 将 SyncCoordinator 的 objectWillChange 转发到 AppState，
