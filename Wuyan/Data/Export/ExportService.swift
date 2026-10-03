@@ -365,6 +365,10 @@ final class ExportService {
                     }
                 }
                 for note in manifest.database.dayNotes {
+                    if strategy == .skipExisting,
+                       try DayNote.fetchOne(db, key: note.date) != nil {
+                        continue
+                    }
                     try note.save(db)
                 }
                 for entry in manifest.database.entries {
