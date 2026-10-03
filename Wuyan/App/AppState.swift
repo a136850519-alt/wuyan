@@ -245,18 +245,16 @@ final class AppState: ObservableObject {
         guard !isRescueMode else { return }
         guard AppSettings.metadataEnabled else { return }
         Task {
-            guard let initial = try? entries.entry(id: entryId),
+            guard let _ = try? entries.entry(id: entryId),
                   let location = await locationMetadata.requestLocation()
             else { return }
             let placeName = await locationMetadata.geocode(location)
             let newLocation = GeoPlace(lat: location.coordinate.latitude, lon: location.coordinate.longitude, placeName: placeName)
             let newWeather = try? await OpenMeteoService().current(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
-            // 网络等待期间若用户编辑、同步或删除了条目，版本条件会使旧结果被丢弃。
-            let updated = try? entries.updateMetadata(
-                id: entryId,
-                expectedContentHash: initial.contentHash,
-                weather: newWeather ?? initial.weather,
-                location: newLocation
+            // 网络等待期间用户可以继续编辑；回写只填充仍为空的字段，
+            // 不会覆盖用户手工设置或正文编辑。
+            let updated = try? entries.fillMissingMetadata(
+                id: entryId, weather: newWeather, location: newLocation
             )
             if updated == true {
                 syncCoordinator.notifyEditCompleted()

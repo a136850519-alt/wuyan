@@ -261,17 +261,24 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
-    /// 只更新后台元数据字段，并在写入前验证正文版本没有变化。
-    /// 返回 false 表示条目不存在或已被更新，调用方应放弃旧异步结果。
+    /// 只填充后台元数据中的空字段，并在同一写事务内重算同步指纹。
+    /// 用户手工填写的天气/地点不会被后台结果覆盖；返回 false 表示没有可填字段。
     @discardableResult
-    func updateMetadata(id: UUID, expectedContentHash: String, weather: Weather?, location: GeoPlace?) throws -> Bool {
+    func fillMissingMetadata(id: UUID, weather: Weather?, location: GeoPlace?) throws -> Bool {
         try writer.write { db in
             guard var current = try Entry.fetchOne(db, key: id.uuidString),
-                  current.contentHash == expectedContentHash,
                   !current.deleted
             else { return false }
-            current.weather = weather
-            current.location = location
+            var changed = false
+            if current.weather == nil, let weather {
+                current.weather = weather
+                changed = true
+            }
+            if current.location == nil, let location {
+                current.location = location
+                changed = true
+            }
+            guard changed else { return false }
             current.refreshForSave()
             try current.update(db)
             return true
