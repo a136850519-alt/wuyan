@@ -294,7 +294,7 @@ final class SyncCoordinator: ObservableObject {
                     }
                 }
                 _ = try await engine.syncNow()
-                UserDefaults.standard.set(false, forKey: SettingKey.cryptoEnabled)
+                AppSettings.setCryptoEnabled(false)
                 await MainActor.run {
                     self.unlockedCrypto = nil
                     self.syncProgress = nil

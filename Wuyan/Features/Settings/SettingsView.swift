@@ -732,7 +732,7 @@ struct SettingsView: View {
                 return
             }
         }
-        UserDefaults.standard.set(cryptoEnabledDraft, forKey: SettingKey.cryptoEnabled)
+        AppSettings.setCryptoEnabled(cryptoEnabledDraft)
         setStatus(StatusSection.crypto, cryptoEnabledDraft ? "加密设置已保存，将在下次同步时生效。请牢记口令。" : "加密已关闭。")
     }
 

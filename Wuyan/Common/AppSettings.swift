@@ -151,6 +151,9 @@ enum AppSettings {
     static var cryptoEnabled: Bool {
         defaults.bool(forKey: SettingKey.cryptoEnabled)
     }
+    static func setCryptoEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: SettingKey.cryptoEnabled)
+    }
     static var cryptoSalt: String? {
         defaults.string(forKey: SettingKey.cryptoSalt)
     }

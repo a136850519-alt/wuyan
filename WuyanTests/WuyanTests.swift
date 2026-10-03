@@ -16,11 +16,6 @@ enum TestIsolation {
     /// released after suspension without requiring the same thread to unlock it.
     private static let gate = DispatchSemaphore(value: 1)
 
-    /// Marker suite for global-state tests. Suites that touch injected globals
-    /// should be nested here as the test suite is expanded.
-    @Suite(.serialized)
-    enum GlobalStateSuite {}
-
     static func withIsolatedDefaults<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
         gate.wait()
         defer { gate.signal() }
