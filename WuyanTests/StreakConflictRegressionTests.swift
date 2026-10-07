@@ -211,14 +211,15 @@ struct EditorExternalUpdateRegressionTests {
         let viewModel = EditorViewModel()
         viewModel.load(id: fixture.entryId, appState: fixture.appState)
         viewModel.body = "移除期间的本地输入"
-        try fixture.db.entryDAO.softDelete(id: fixture.entryId)
+        try fixture.db.entryDAO.removeArchivedLocal(id: fixture.entryId)
+        viewModel.flushIfNeeded(appState: fixture.appState)
 
         let saved = await waitUntil {
             let entries = (try? fixture.db.entryDAO.timeline(filter: .all)) ?? []
             return entries.contains { $0.id != fixture.entryId && $0.body == "移除期间的本地输入" }
         }
         #expect(saved)
-        #expect(try fixture.db.entryDAO.entry(id: fixture.entryId)?.deleted == true)
+        #expect(try fixture.db.entryDAO.entry(id: fixture.entryId) == nil)
         let copies = try fixture.db.entryDAO.timeline(filter: .all).filter { $0.id != fixture.entryId }
         #expect(copies.contains { $0.title?.hasPrefix("【未保存的编辑】") == true })
     }
