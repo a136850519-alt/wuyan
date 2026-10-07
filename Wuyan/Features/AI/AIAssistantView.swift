@@ -32,7 +32,18 @@ struct AIAssistantView: View {
                     .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if isRunning {
-                ProgressView()
+                HStack(spacing: 8) {
+                    ProgressView("处理中…")
+                    Spacer()
+                    Button {
+                        requestTask?.cancel()
+                        requestTask = nil
+                        isRunning = false
+                    } label: {
+                        Label("停止", systemImage: "stop.circle")
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
             if !output.isEmpty {
                 Text(output)
@@ -137,11 +148,14 @@ struct AIAssistantView: View {
                 await MainActor.run {
                     output = result
                     isRunning = false
+                    requestTask = nil
                 }
             } catch {
+                if Task.isCancelled { return }
                 await MainActor.run {
                     output = error.localizedDescription
                     isRunning = false
+                    requestTask = nil
                 }
             }
         }
@@ -162,11 +176,14 @@ struct AIAssistantView: View {
                 }
                 await MainActor.run {
                     isRunning = false
+                    requestTask = nil
                 }
             } catch {
+                if Task.isCancelled { return }
                 await MainActor.run {
                     output = error.localizedDescription
                     isRunning = false
+                    requestTask = nil
                 }
             }
         }
