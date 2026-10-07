@@ -1310,8 +1310,9 @@ actor SyncEngine {
             Self.normalizePurges(&manifest)
         }
 
-        let allEntries = try database.entryDAO.timeline(filter: .all) + database.entryDAO.trashedEntries()
-        let localByID = Dictionary(uniqueKeysWithValues: allEntries.map { ($0.id, $0) })
+        let localByID = Dictionary(
+            uniqueKeysWithValues: try database.entryDAO.entries(ids: Set(effective.keys)).map { ($0.id, $0) }
+        )
         var locallyRestoredIDs: [UUID] = []
         for (id, deletedAt) in effective {
             if let local = localByID[id], !local.deleted, local.dirty, local.updatedAt >= deletedAt,
@@ -1702,7 +1703,8 @@ actor SyncEngine {
         }
         var plan = Dictionary(uniqueKeysWithValues: try database.entryDAO.dirtyEntries().filter(allowed).map { ($0.id, $0) })
         let remoteLiveIDs = Set(manifest.entries.filter { !$0.deleted }.map(\.id))
-        for entry in try database.entryDAO.timeline(filter: .all) where !remoteLiveIDs.contains(entry.id) && allowed(entry) {
+        let missingIDs = try database.entryDAO.entryIDs().subtracting(remoteLiveIDs)
+        for entry in try database.entryDAO.entries(ids: missingIDs) where allowed(entry) {
             plan[entry.id] = entry
         }
         return plan.values.sorted { $0.updatedAt < $1.updatedAt }

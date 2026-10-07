@@ -664,6 +664,21 @@ struct EntrySummaryTests {
     }
 }
 
+@Suite("Sync planning reads")
+struct SyncPlanningReadTests {
+    @Test("同步规划可只读取活动条目 ID")
+    func activeIDsExcludeTrash() throws {
+        let db = try AppDatabase.makeInMemory()
+        let board = try #require(db.boardDAO.all().first)
+        let live = Entry(boardId: board.id, body: "live", isDraft: false)
+        let trashed = Entry(boardId: board.id, body: "trash", isDraft: false, deleted: true)
+        try db.entryDAO.save(live)
+        try db.entryDAO.save(trashed)
+        #expect(try db.entryDAO.entryIDs() == [live.id])
+        #expect(try db.entryDAO.entryIDs(includeDeleted: true) == [live.id, trashed.id])
+    }
+}
+
 // MARK: - WebDAV URL Construction Tests
 
 @Suite("WebDAV URL Construction")

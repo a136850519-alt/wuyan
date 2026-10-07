@@ -245,6 +245,30 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// Read only identifiers for sync planning. This keeps the common path
+    /// from materializing every body/bodyRTF blob just to compare the index.
+    func entryIDs(includeDeleted: Bool = false) throws -> Set<UUID> {
+        try writer.read { db in
+            let predicate = includeDeleted ? "" : " WHERE deleted = 0"
+            let values: [String] = try String.fetchAll(db, sql: "SELECT id FROM entry\(predicate)")
+            return Set(values.compactMap(UUID.init(uuidString:)))
+        }
+    }
+
+    /// Fetch full rows only for a known set of IDs selected by the sync plan.
+    func entries(ids: Set<UUID>) throws -> [Entry] {
+        guard !ids.isEmpty else { return [] }
+        return try writer.read { db in
+            let values = ids.map(\.uuidString)
+            let placeholders = values.map { _ in "?" }.joined(separator: ",")
+            return try Entry.fetchAll(
+                db,
+                sql: "SELECT * FROM entry WHERE id IN (\(placeholders))",
+                arguments: StatementArguments(values)
+            )
+        }
+    }
+
     /// 按业务时间范围读取完整条目，供回顾等明确范围的 AI 功能使用。
     /// 查询在数据库侧过滤，避免把多年正文全部加载到主线程后再截取。
     func entries(since date: Date) throws -> [Entry] {
