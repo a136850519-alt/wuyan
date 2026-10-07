@@ -17,6 +17,12 @@ struct WebDAVProvider: RemoteStorageProvider {
         }
     }
 
+    /// Exposes the normalized request target for deterministic URL tests and
+    /// keeps path joining in one place for all WebDAV operations.
+    func resolvedURL(for path: String) throws -> URL {
+        try request(path: path, method: "GET").url ?? baseURL
+    }
+
     func mkcolRecursive(_ path: String) async throws {
         var current = ""
         for component in normalized(path).split(separator: "/") {

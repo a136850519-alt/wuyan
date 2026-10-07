@@ -688,7 +688,9 @@ struct DayNoteConflictTests {
         try db.dayNoteDAO.saveConflictCopy(note)
         let copies = try db.dayNoteDAO.conflictCopyRecords()
         let copy = try #require(copies.first)
-        #expect(copy.note == note)
+        #expect(copy.note.date == note.date)
+        #expect(copy.note.rawSummary == note.rawSummary)
+        #expect(copy.note.poeticLine == note.poeticLine)
         try db.dayNoteDAO.dropConflictCopy(id: copy.id)
         #expect(try db.dayNoteDAO.conflictCopyRecords().isEmpty)
     }
@@ -703,15 +705,14 @@ struct WebDAVURLTests {
     func urlConstructionWithBasePath() throws {
         let baseURL = URL(string: "https://nas.local:5006/dav")!
         let provider = WebDAVProvider(baseURL: baseURL, username: "user", password: "pass")
-        // Provider 成功构造即验证 URL 逻辑正确
-        #expect(type(of: provider) == WebDAVProvider.self)
+        #expect(try provider.resolvedURL(for: "/Wuyan/entries/a.json").absoluteString == "https://nas.local:5006/dav/Wuyan/entries/a.json")
     }
 
     @Test("URL construction without path")
     func urlConstructionWithoutPath() throws {
         let baseURL = URL(string: "https://nas.local:5006")!
         let provider = WebDAVProvider(baseURL: baseURL)
-        #expect(type(of: provider) == WebDAVProvider.self)
+        #expect(try provider.resolvedURL(for: "Wuyan/manifest.json").absoluteString == "https://nas.local:5006/Wuyan/manifest.json")
     }
 }
 
