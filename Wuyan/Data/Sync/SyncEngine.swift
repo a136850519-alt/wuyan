@@ -728,18 +728,18 @@ actor SyncEngine {
 
     /// 按年拉取：把某一年的日记/日札从远端索引拉回本地（忽略「已归档跳过」规则）。
     /// 供「从已归档下载回本地」使用；附件由调用方按需下载。
-    func pullYear(_ year: Int) async throws -> Int {
+    func pullYear(_ year: Int) async throws -> SyncReport {
         status = .syncing
         do {
             try await ensureRemoteTree()
             let (manifest, _, _) = try await loadManifest()
             let prefix = String(format: "%04d-", year)
-            var pulled = 0
+            var report = SyncReport()
             for board in manifest.boards where (try database.boardDAO.board(id: board.id)) == nil {
                 try database.boardDAO.save(board)
             }
-            var report = SyncReport()
             let localEntries = try database.entryDAO.timeline(filter: .year(year))
+                + database.entryDAO.trashedEntries().filter { $0.dayDate.hasPrefix(prefix) }
             let localByID = Dictionary(uniqueKeysWithValues: localEntries.map { ($0.id, $0) })
             for remote in manifest.entries where remote.dayDate.hasPrefix(prefix) {
                 let local = localByID[remote.id]
@@ -754,12 +754,12 @@ actor SyncEngine {
                             try database.entryDAO.softDelete(id: remote.id, expectedContentHash: latest.contentHash)
                         }
                     }
-                    pulled += 1
+                    report.pulled += 1
                     continue
                 }
                 guard let local else {
                     try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: nil, report: &report)
-                    pulled += 1
+                    report.pulled += 1
                     continue
                 }
                 if local.contentHash == remote.hash { continue }
@@ -774,7 +774,7 @@ actor SyncEngine {
                     report.conflicts.append(remote.id)
                 }
                 try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: local.contentHash, report: &report)
-                pulled += 1
+                report.pulled += 1
             }
             for remote in manifest.daynotes where remote.date.hasPrefix(prefix) {
                 let data = try await provider.get(remote.path)
@@ -794,7 +794,7 @@ actor SyncEngine {
                 try database.dayNoteDAO.setBaseline(date: note.date, hash: Hashing.dayNoteHash(note))
             }
             status = .idle
-            return pulled
+            return report
         } catch {
             status = .error(error.localizedDescription)
             throw error

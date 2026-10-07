@@ -26,6 +26,7 @@ final class EditorViewModel: ObservableObject {
     /// 当前条目的旧版本已被同步留档到冲突列表，即使编辑器当时没有未保存输入
     /// 也要给出可见提示。
     @Published var externalConflictCopyDetected = false
+    @Published var archiveLocked = false
     /// R1-4: 缓存非空白字数，避免 View body 中每次 body 变化都 O(n) 重算
     @Published var nonWhitespaceCount: Int = 0
 
@@ -87,6 +88,7 @@ final class EditorViewModel: ObservableObject {
             loadedContentHash = nil
             externalUpdateDetected = false
             externalConflictCopyDetected = false
+            archiveLocked = false
             restartObservation(id: nil, appState: appState)
             return
         }
@@ -97,11 +99,13 @@ final class EditorViewModel: ObservableObject {
                 loadedContentHash = nil
                 externalUpdateDetected = false
                 externalConflictCopyDetected = false
+                archiveLocked = false
                 restartObservation(id: nil, appState: appState)
                 return
             }
             externalUpdateDetected = false
             externalConflictCopyDetected = false
+            archiveLocked = false
             apply(fetched)
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -167,9 +171,10 @@ final class EditorViewModel: ObservableObject {
         // UI-02：归档进行中的年份锁定编辑，防止上传后本地删除丢掉新编辑
         if let archiving = appState.archivingYear,
            archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
-            externalUpdateDetected = true
+            archiveLocked = true
             return
         }
+        archiveLocked = false
         guard var entry else { return }
         applyEditorFields(to: &entry)
 
@@ -253,9 +258,10 @@ final class EditorViewModel: ObservableObject {
         // UI-02：归档进行中的年份锁定删除操作
         if let archiving = appState.archivingYear,
            archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
-            externalUpdateDetected = true
+            archiveLocked = true
             return
         }
+        archiveLocked = false
         // Flush the final debounce window before moving the row to the trash.
         flushIfNeeded(appState: appState)
         guard !isDirty else { return }

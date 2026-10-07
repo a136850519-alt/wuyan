@@ -89,7 +89,7 @@ struct EditorView: View {
 
     private var writingPane: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
+            if viewModel.archiveLocked || viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
                 externalUpdateBanner
             }
             dateAnchor
@@ -113,7 +113,7 @@ struct EditorView: View {
             HStack {
                 Text("\(viewModel.nonWhitespaceCount) 字")
                 Spacer()
-                if viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
+                if viewModel.archiveLocked || viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
                     Text("已暂停自动保存")
                 } else if viewModel.isDirty {
                     Text("正在保存…")
@@ -137,14 +137,16 @@ struct EditorView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.externalConflictCopyDetected ? "你刚才的版本已另存到冲突列表" : "该条目在后台已被更新（同步或天气/定位写入）")
+                Text(viewModel.archiveLocked ? "该年份正在归档，暂不保存" : (viewModel.externalConflictCopyDetected ? "你刚才的版本已另存到冲突列表" : "该条目在后台已被更新（同步或天气/定位写入）"))
                     .font(.callout.weight(.semibold))
-                Text(viewModel.externalConflictCopyDetected ? "当前编辑器已显示远端版本，可在设置 › 冲突列表中查看并恢复。" : "自动保存已暂停，你的编辑仍在编辑器中。")
+                Text(viewModel.archiveLocked ? "归档完成后即可继续编辑。" : (viewModel.externalConflictCopyDetected ? "当前编辑器已显示远端版本，可在设置 › 冲突列表中查看并恢复。" : "自动保存已暂停，你的编辑仍在编辑器中。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if viewModel.externalConflictCopyDetected {
+            if viewModel.archiveLocked {
+                EmptyView()
+            } else if viewModel.externalConflictCopyDetected {
                 Button("查看冲突列表") { appState.sidebarSelection = .settings }
                 Button("关闭提示") { viewModel.externalConflictCopyDetected = false }
             } else {

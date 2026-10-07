@@ -164,6 +164,16 @@ struct OnboardingView: View {
     private func saveWebDAVSettings(showMessage: Bool = true) -> Bool {
         webDAVBaseURL = webDAVBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         webDAVUsername = webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: webDAVBaseURL), url.scheme?.lowercased() == "http",
+           let host = url.host?.lowercased(),
+           host != "localhost", host != "127.0.0.1", host != "::1",
+           !host.hasPrefix("192.168."), !host.hasPrefix("10."),
+           !(host.split(separator: ".").count == 4
+             && Int(host.split(separator: ".")[0]) == 172
+             && (16...31).contains(Int(host.split(separator: ".")[1]) ?? -1)) {
+            saveMessage = "WebDAV 使用明文 HTTP，已拒绝保存非局域网地址。请改用 HTTPS。"
+            return false
+        }
         guard SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword) else {
             saveMessage = "密码无法保存到钥匙串，配置未生效。"
             return false

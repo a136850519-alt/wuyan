@@ -368,7 +368,10 @@ final class SyncCoordinator: ObservableObject {
                 // Archive is destructive locally. Establish a fresh baseline
                 // immediately before the archive so an offline device cannot
                 // publish an older copy over another device's newer edits.
-                _ = try await engine.syncNow()
+                let baselineReport = try await engine.syncNow()
+                await MainActor.run {
+                    self.syncConflicts = baselineReport.conflicts
+                }
                 // UI-02：引擎已完成推送 + 读回校验；只根据验证通过的快照清理本地。
                 let result = try await engine.archiveYear(year)
                 let uploaded = result.report.mediaUploaded
@@ -471,7 +474,10 @@ final class SyncCoordinator: ObservableObject {
                         self.publish(progress: progress, message: "\(year) 年下载：\(progress.phase)")
                     }
                 }
-                _ = try await engine.pullYear(year)
+                let yearReport = try await engine.pullYear(year)
+                await MainActor.run {
+                    self.syncConflicts = Array(Set(yearReport.conflicts))
+                }
                 let yearEntries = try entries.timeline(filter: .year(year))
                 await MainActor.run {
                     self.syncProgress = SyncProgress(
@@ -562,8 +568,11 @@ final class SyncCoordinator: ObservableObject {
             return try mediaStore.storeRemoteMediaFile(movingFrom: tempURL, for: asset)
         }
 
-        let data = try await provider.get(encPath)
-        return try mediaStore.storeRemoteMedia(try decryptRemoteDataIfNeeded(data, crypto: crypto), for: asset)
+        let decrypted = try await Task.detached(priority: .userInitiated) {
+            let data = try await provider.get(encPath)
+            return try Self.decryptRemoteData(data, crypto: crypto)
+        }.value
+        return try mediaStore.storeRemoteMedia(decrypted, for: asset)
     }
 
     private func downloadThumbnailIfNeeded(
@@ -586,7 +595,7 @@ final class SyncCoordinator: ObservableObject {
         let isEncryptedPayload = payload.flatMap { Data(base64Encoded: $0.ciphertextBase64) } != nil
         let thumbnailData: Data
         if isEncryptedPayload {
-            thumbnailData = try decryptRemoteDataIfNeeded(data, crypto: crypto)
+            thumbnailData = try Self.decryptRemoteData(data, crypto: crypto)
         } else {
             if crypto != nil && !plaintextToleratedForDownloads {
                 throw SyncError.decryptFailed(reason: "远端对象不是加密格式，可能被篡改")
@@ -669,7 +678,7 @@ final class SyncCoordinator: ObservableObject {
         return crypto
     }
 
-    private func decryptRemoteDataIfNeeded(_ data: Data, crypto: SyncCrypto?) throws -> Data {
+    private nonisolated static func decryptRemoteData(_ data: Data, crypto: SyncCrypto?) throws -> Data {
         guard let crypto else { return data }
         guard let payload = try? JSONDecoder.wuyan.decode(EncryptedPayload.self, from: data),
               let ciphertext = Data(base64Encoded: payload.ciphertextBase64)
@@ -686,11 +695,6 @@ final class SyncCoordinator: ObservableObject {
             }
             return try crypto.box.open(ciphertext, key: key)
         } catch let e as SyncError {
-            if case let .decryptFailed(reason) = e,
-               reason.contains("未知的数据密钥") || reason.contains("密钥尚未解锁") {
-                unlockedCrypto = nil
-                downloadManifestCheckedFingerprint = nil
-            }
             throw e
         } catch {
             throw SyncError.decryptFailed(reason: "媒体解密失败：\(error.localizedDescription)")

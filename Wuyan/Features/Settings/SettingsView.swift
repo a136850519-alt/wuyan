@@ -31,7 +31,6 @@ struct SettingsView: View {
     @State private var pendingRestoreDirectory: URL?
     @State private var pendingJSONImportURL: URL?
     @State private var pendingEvictYear: Int?
-    @State private var isBackupTaskRunning = false
     @State private var webDAVPassword = ""
     @State private var s3SecretKey = ""
     @State private var zhipuAPIKey = ""
@@ -275,21 +274,21 @@ struct SettingsView: View {
                 Button("创建完整备份（含媒体文件，可独立恢复）") {
                     exportFullBackup()
                 }
-                .disabled(isBackupTaskRunning)
+                .disabled(appState.isBackupTaskRunning)
                 Button("从完整备份还原…") {
                     pickFullBackupForRestore()
                 }
-                .disabled(isBackupTaskRunning)
+                .disabled(appState.isBackupTaskRunning)
                 Divider()
                 Button("导出 Markdown / JSON / PDF（阅读用）") {
                     exportAll()
                 }
-                .disabled(isBackupTaskRunning)
+                .disabled(appState.isBackupTaskRunning)
                 Button("从 JSON 备份还原（旧格式）") {
                     importJSONBackup()
                 }
-                .disabled(isBackupTaskRunning)
-                if isBackupTaskRunning {
+                .disabled(appState.isBackupTaskRunning)
+                if appState.isBackupTaskRunning {
                     ProgressView("正在处理备份…")
                 }
                 sectionStatus(for: StatusSection.export)
@@ -552,7 +551,7 @@ struct SettingsView: View {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let directory = panel.url {
-            isBackupTaskRunning = true
+            appState.isBackupTaskRunning = true
             let database = appState.db
             Task {
                 let result = await Task.detached(priority: .userInitiated) {
@@ -565,7 +564,7 @@ struct SettingsView: View {
                         return entries.count
                     }
                 }.value
-                isBackupTaskRunning = false
+                appState.isBackupTaskRunning = false
                 switch result {
                 case let .success(count): setStatus(StatusSection.export, "已导出 \(count) 篇。")
                 case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
@@ -589,13 +588,13 @@ struct SettingsView: View {
     private func runJSONImport() {
         guard let url = pendingJSONImportURL else { return }
         pendingJSONImportURL = nil
-        isBackupTaskRunning = true
+        appState.isBackupTaskRunning = true
         let database = appState.db
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try ExportService().importJSON(from: url, database: database) }
             }.value
-            isBackupTaskRunning = false
+            appState.isBackupTaskRunning = false
             switch result {
             case let .success(count): setStatus(StatusSection.export, "已还原 \(count) 篇。")
             case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
@@ -613,7 +612,7 @@ struct SettingsView: View {
         panel.prompt = "选择备份位置"
         guard panel.runModal() == .OK, let directory = panel.url else { return }
         let target = directory.appendingPathComponent("晤言完整备份-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
-        isBackupTaskRunning = true
+        appState.isBackupTaskRunning = true
         let database = appState.db
         let archived = appState.archivedYears
         if !archived.isEmpty {
@@ -623,7 +622,7 @@ struct SettingsView: View {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try ExportService().exportFullBackupPackage(database: database, to: target) }
             }.value
-            isBackupTaskRunning = false
+            appState.isBackupTaskRunning = false
             switch result {
             case let .success(count): setStatus(StatusSection.export, "完整备份已创建（\(count) 篇，含媒体文件）：\(target.lastPathComponent)")
             case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
@@ -647,7 +646,7 @@ struct SettingsView: View {
         }
         guard let directory = pendingRestoreDirectory else { return }
         pendingRestoreDirectory = nil
-        isBackupTaskRunning = true
+        appState.isBackupTaskRunning = true
         let database = appState.db
         let mediaStore = appState.mediaStore
         Task {
@@ -656,7 +655,7 @@ struct SettingsView: View {
                     try ExportService().importFullBackupPackage(from: directory, database: database, mediaStore: mediaStore, strategy: strategy)
                 }
             }.value
-            isBackupTaskRunning = false
+            appState.isBackupTaskRunning = false
             switch result {
             case let .success(report):
                 setStatus(StatusSection.export, "已导入 \(report.importedEntries) 篇（跳过已存在 \(report.skippedEntries) 篇），恢复媒体 \(report.restoredMediaFiles) 个，缺失本地副本 \(report.missingLocalCopies) 个（可从远端补）。还原前快照：\(report.snapshotURL.lastPathComponent)")

@@ -52,6 +52,8 @@ final class AppState: ObservableObject {
     /// UI-02（已确认）：归档进行中的年份——该年份内容锁定编辑，防止归档后本地删除丢掉新编辑。
     @Published var archivingYear: Int?
     @Published var pendingDeleteEntryId: UUID?
+    /// 导入/导出任务跨设置页生命周期互斥，避免离开页面后重复还原。
+    @Published var isBackupTaskRunning = false
     /// UI-07：数据库打开失败的只读救援模式。禁止编辑与同步，提供救援副本导出。
     let isRescueMode: Bool
 
