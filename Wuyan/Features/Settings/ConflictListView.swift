@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// UI-06：应用内冲突列表。冲突发生时本地被替代版本留档于本地 conflict_copy
-/// （与远端 conflicts 目录同源），此处可逐条查看并选择保留版本。
+/// UI-06：应用内冲突列表。条目和日札落败版本都在这里查看、恢复或丢弃。
 struct ConflictListView: View {
     @EnvironmentObject private var appState: AppState
     @State private var copies: [ConflictCopyItem] = []
     @State private var selected: ConflictCopyItem?
     @State private var currentEntry: Entry?
+    @State private var dayNoteCopies: [DayNoteConflictCopy] = []
+    @State private var selectedDayNote: DayNoteConflictCopy?
 
     struct ConflictCopyItem: Identifiable, Equatable {
         let id: UUID
@@ -20,68 +21,122 @@ struct ConflictListView: View {
     var body: some View {
         HSplitView {
             List {
-                if copies.isEmpty {
+                if copies.isEmpty && dayNoteCopies.isEmpty {
                     Text("没有待处理的冲突。")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(copies) { item in
-                    Button {
-                        selected = item
-                        currentEntry = ((try? appState.db.entryDAO.conflictCopies()) ?? [])
-                            .first { $0.id == item.id }
-                            .flatMap { try? appState.entries.entry(id: $0.entryId) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(item.dayDate) · \(item.title?.isEmpty == false ? item.title! : String(item.body.prefix(24)))")
-                                .lineLimit(1)
-                            Text("副本时间 \(item.createdAt.formatted(.dateTime))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if !copies.isEmpty {
+                    Section("日记") {
+                        ForEach(copies) { item in
+                            Button {
+                                selected = item
+                                selectedDayNote = nil
+                                currentEntry = ((try? appState.db.entryDAO.conflictCopies()) ?? [])
+                                    .first { $0.id == item.id }
+                                    .flatMap { try? appState.entries.entry(id: $0.entryId) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(item.dayDate) · \(item.title?.isEmpty == false ? item.title! : String(item.body.prefix(24)))")
+                                        .lineLimit(1)
+                                    Text("副本时间 \(item.createdAt.formatted(.dateTime))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(selected?.id == item.id ? Color.accentColor.opacity(0.12) : Color.clear)
                         }
                     }
-                    .buttonStyle(.plain)
-                    .listRowBackground(selected?.id == item.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                }
+                if !dayNoteCopies.isEmpty {
+                    Section("日札") {
+                        ForEach(dayNoteCopies) { item in
+                            Button {
+                                selected = nil
+                                currentEntry = nil
+                                selectedDayNote = item
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.note.date)
+                                    Text(item.note.rawSummary)
+                                        .lineLimit(1)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(selectedDayNote?.id == item.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                        }
+                    }
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
 
-            VStack(alignment: .leading, spacing: 12) {
-                if let item = selected {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label("本地副本（冲突时被远端版本替代）", systemImage: "doc")
-                                .font(.headline)
-                            Text("\(item.dayDate) \(item.journalDate.formatted(.dateTime.hour().minute()))")
-                                .foregroundStyle(.secondary)
-                            Text(item.body)
-                                .textSelection(.enabled)
-                            if let current = currentEntry {
-                                Divider()
-                                Label("当前本地版本（远端）", systemImage: "doc.text")
-                                    .font(.headline)
-                                Text(current.body)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    HStack {
-                        Button("保留本地副本") { resolve(.keepLocal) }
-                        Button("保留远端版本") { resolve(.keepRemote) }
-                        Button("都保留（副本存为新日记）") { resolve(.keepBoth) }
-                        Spacer()
-                    }
-                    .padding(12)
-                } else {
-                    ContentUnavailableView("选择一个冲突条目", systemImage: "arrow.triangle.branch")
-                }
-            }
-            .frame(minWidth: 420)
+            detailPane
+                .frame(minWidth: 420)
         }
         .navigationTitle("同步冲突")
         .onAppear(perform: reload)
+    }
+
+    @ViewBuilder
+    private var detailPane: some View {
+        if let noteCopy = selectedDayNote {
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("日札冲突副本", systemImage: "note.text")
+                            .font(.headline)
+                        Text("\(noteCopy.note.date) · 副本时间 \(noteCopy.createdAt.formatted(.dateTime))")
+                            .foregroundStyle(.secondary)
+                        Text(noteCopy.note.rawSummary)
+                            .textSelection(.enabled)
+                        Divider()
+                        Text(noteCopy.note.poeticLine)
+                            .textSelection(.enabled)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button("恢复此日札") { resolveDayNote(restore: true) }
+                    Button("丢弃副本") { resolveDayNote(restore: false) }
+                    Spacer()
+                }
+                .padding(12)
+            }
+        } else if let item = selected {
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("本地副本（冲突时被远端版本替代）", systemImage: "doc")
+                            .font(.headline)
+                        Text("\(item.dayDate) \(item.journalDate.formatted(.dateTime.hour().minute()))")
+                            .foregroundStyle(.secondary)
+                        Text(item.body)
+                            .textSelection(.enabled)
+                        if let current = currentEntry {
+                            Divider()
+                            Label("当前本地版本（远端）", systemImage: "doc.text")
+                                .font(.headline)
+                            Text(current.body)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button("保留本地副本") { resolve(.keepLocal) }
+                    Button("保留远端版本") { resolve(.keepRemote) }
+                    Button("都保留（副本存为新日记）") { resolve(.keepBoth) }
+                    Spacer()
+                }
+                .padding(12)
+            }
+        } else {
+            ContentUnavailableView("选择一个冲突条目", systemImage: "arrow.triangle.branch")
+        }
     }
 
     private func reload() {
@@ -95,9 +150,13 @@ struct ConflictListView: View {
                 createdAt: copy.createdAt
             )
         }
+        dayNoteCopies = (try? appState.db.dayNoteDAO.conflictCopyRecords()) ?? []
         if let selected, !copies.contains(where: { $0.id == selected.id }) {
             self.selected = nil
             currentEntry = nil
+        }
+        if let selectedDayNote, !dayNoteCopies.contains(where: { $0.id == selectedDayNote.id }) {
+            self.selectedDayNote = nil
         }
     }
 
@@ -107,10 +166,6 @@ struct ConflictListView: View {
         case keepBoth
     }
 
-    /// 冲突解决（UI-06 已确认方案）：
-    /// - 保留本地：把留档副本写回为主版本（dirty=true），下次同步覆盖远端；
-    /// - 保留远端：丢弃副本（当前本地已是远端版本）；
-    /// - 都保留：留档副本以新 ID 存为独立日记，两边内容都在。
     private func resolve(_ resolution: Resolution) {
         guard let item = selected else { return }
         do {
@@ -125,8 +180,6 @@ struct ConflictListView: View {
                 case .keepBoth:
                     var entry = envelope.entry
                     entry.id = UUID()
-                    // 新条目必须拥有独立的媒体记录；只复用 mediaIds 会让原条目删除时
-                    // 级联删除冲突副本仍在引用的附件。
                     let clonedAssets = (envelope.mediaAssets ?? []).map { asset -> MediaAsset in
                         var clone = asset
                         clone.id = UUID()
@@ -143,6 +196,20 @@ struct ConflictListView: View {
             }
             try appState.db.entryDAO.dropConflictCopy(copyID: item.id)
             appState.syncCoordinator.notifyEditCompleted()
+            reload()
+        } catch {
+            appState.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resolveDayNote(restore: Bool) {
+        guard let selectedDayNote else { return }
+        do {
+            if restore {
+                try appState.db.dayNoteDAO.upsert(selectedDayNote.note)
+                appState.syncCoordinator.notifyEditCompleted()
+            }
+            try appState.db.dayNoteDAO.dropConflictCopy(id: selectedDayNote.id)
             reload()
         } catch {
             appState.errorMessage = error.localizedDescription

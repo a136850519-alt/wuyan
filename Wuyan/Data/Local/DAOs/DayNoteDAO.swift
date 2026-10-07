@@ -1,6 +1,12 @@
 import Foundation
 import GRDB
 
+struct DayNoteConflictCopy: Identifiable, Equatable {
+    let id: UUID
+    let note: DayNote
+    let createdAt: Date
+}
+
 public protocol DayNoteRepository {
     func note(on date: Date) throws -> DayNote?
     func note(dayKey: String) throws -> DayNote?
@@ -126,6 +132,31 @@ public struct DayNoteDAO: DayNoteRepository {
                 guard let data = payload.data(using: .utf8) else { return nil }
                 return try? JSONDecoder.wuyan.decode(DayNote.self, from: data)
             }
+        }
+    }
+
+    func conflictCopyRecords() throws -> [DayNoteConflictCopy] {
+        try writer.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT id, payload, createdAt FROM daynote_conflict ORDER BY createdAt DESC"
+            )
+            return rows.compactMap { row in
+                guard let idString: String = row["id"],
+                      let id = UUID(uuidString: idString),
+                      let payload: String = row["payload"],
+                      let data = payload.data(using: .utf8),
+                      let note = try? JSONDecoder.wuyan.decode(DayNote.self, from: data),
+                      let createdAt: Date = row["createdAt"]
+                else { return nil }
+                return DayNoteConflictCopy(id: id, note: note, createdAt: createdAt)
+            }
+        }
+    }
+
+    func dropConflictCopy(id: UUID) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM daynote_conflict WHERE id = ?", arguments: [id.uuidString])
         }
     }
 }

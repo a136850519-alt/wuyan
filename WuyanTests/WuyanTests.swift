@@ -679,6 +679,21 @@ struct SyncPlanningReadTests {
     }
 }
 
+@Suite("Day-note conflicts")
+struct DayNoteConflictTests {
+    @Test("日札冲突副本可枚举并丢弃")
+    func conflictCopyCanBeListedAndDropped() throws {
+        let db = try AppDatabase.makeInMemory()
+        let note = DayNote(date: "2026-07-10", rawSummary: "远端摘要", poeticLine: "远端诗句")
+        try db.dayNoteDAO.saveConflictCopy(note)
+        let copies = try db.dayNoteDAO.conflictCopyRecords()
+        let copy = try #require(copies.first)
+        #expect(copy.note == note)
+        try db.dayNoteDAO.dropConflictCopy(id: copy.id)
+        #expect(try db.dayNoteDAO.conflictCopyRecords().isEmpty)
+    }
+}
+
 // MARK: - WebDAV URL Construction Tests
 
 @Suite("WebDAV URL Construction")
