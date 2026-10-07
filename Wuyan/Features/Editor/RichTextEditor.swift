@@ -2,9 +2,24 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum RichTextImageSupport {
+    static func scaled(_ image: NSImage, maxWidth: CGFloat) -> NSImage {
+        guard image.size.width > maxWidth else { return image }
+        let ratio = maxWidth / image.size.width
+        let size = NSSize(width: maxWidth, height: image.size.height * ratio)
+        let output = NSImage(size: size)
+        output.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: size))
+        output.unlockFocus()
+        return output
+    }
+}
+
 /// Intercept image paste/drop so the same 720px down-scaling path is used as
 /// the toolbar importer. Plain text continues through NSTextView unchanged.
 private final class WuyanTextView: NSTextView {
+    var onImagePasted: ((NSImage) -> Void)?
+
     override func paste(_ sender: Any?) {
         if insertImages(from: NSPasteboard.general) { return }
         super.paste(sender)
@@ -18,11 +33,19 @@ private final class WuyanTextView: NSTextView {
     private func insertImages(from pasteboard: NSPasteboard) -> Bool {
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [])
             .filter { UTType(filenameExtension: $0.pathExtension)?.conforms(to: .image) == true }
-        guard !urls.isEmpty else { return false }
-        for url in urls {
-            guard let image = NSImage(contentsOf: url) else { continue }
+        let images: [NSImage]
+        if !urls.isEmpty {
+            images = urls.compactMap(NSImage.init(contentsOf:))
+        } else {
+            // Screenshots and images copied from browsers are usually TIFF/PNG
+            // data on the pasteboard rather than file URLs.
+            images = (pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage]) ?? []
+        }
+        guard !images.isEmpty else { return false }
+        for image in images {
+            onImagePasted?(image)
             let attachment = NSTextAttachment()
-            attachment.image = scaled(image, maxWidth: 720)
+            attachment.image = RichTextImageSupport.scaled(image, maxWidth: 720)
             let attributed = NSMutableAttributedString(attachment: attachment)
             attributed.append(NSAttributedString(string: "\n"))
             textStorage?.replaceCharacters(in: selectedRange(), with: attributed)
@@ -32,16 +55,6 @@ private final class WuyanTextView: NSTextView {
         return true
     }
 
-    private func scaled(_ image: NSImage, maxWidth: CGFloat) -> NSImage {
-        guard image.size.width > maxWidth else { return image }
-        let ratio = maxWidth / image.size.width
-        let size = NSSize(width: maxWidth, height: image.size.height * ratio)
-        let output = NSImage(size: size)
-        output.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: size))
-        output.unlockFocus()
-        return output
-    }
 }
 
 /// UI-09④：按设置页「正文字体」构造 NSFont，使字体设置贯穿正文输入框，
@@ -96,7 +109,7 @@ final class RichTextEditorController: ObservableObject {
         for url in urls {
             guard let image = NSImage(contentsOf: url) else { continue }
             let attachment = NSTextAttachment()
-            attachment.image = scaledImage(image, maxWidth: 720)
+            attachment.image = RichTextImageSupport.scaled(image, maxWidth: 720)
             let attributedImage = NSMutableAttributedString(attachment: attachment)
             attributedImage.append(NSAttributedString(string: "\n"))
             textView.textStorage?.replaceCharacters(in: textView.selectedRange(), with: attributedImage)
@@ -116,22 +129,13 @@ final class RichTextEditorController: ObservableObject {
         textView.didChangeText()
     }
 
-    private func scaledImage(_ image: NSImage, maxWidth: CGFloat) -> NSImage {
-        guard image.size.width > maxWidth else { return image }
-        let ratio = maxWidth / image.size.width
-        let size = NSSize(width: maxWidth, height: image.size.height * ratio)
-        let output = NSImage(size: size)
-        output.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: size))
-        output.unlockFocus()
-        return output
-    }
 }
 
 struct RichTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var rtfData: Data?
     var controller: RichTextEditorController
+    var onImagePasted: ((NSImage) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -156,6 +160,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 0, height: 8)
         textView.textContainer?.widthTracksTextView = true
+        (textView as? WuyanTextView)?.onImagePasted = onImagePasted
         // UI-09④：跟随设置页「正文字体」
         textView.font = EditorBodyFont.nsFont(size: 18)
         textView.typingAttributes[.font] = textView.font
@@ -166,6 +171,7 @@ struct RichTextEditor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
+        (textView as? WuyanTextView)?.onImagePasted = onImagePasted
         controller.textView = textView
         context.coordinator.parent = self
         context.coordinator.loadIfNeeded(textView: textView, text: text, rtfData: rtfData)
@@ -175,6 +181,7 @@ struct RichTextEditor: NSViewRepresentable {
         var parent: RichTextEditor
         private var lastRTFData: Data?
         private var isApplyingExternalValue = false
+        private var pendingRTFSerialization: DispatchWorkItem?
 
         init(_ parent: RichTextEditor) {
             self.parent = parent
@@ -185,12 +192,26 @@ struct RichTextEditor: NSViewRepresentable {
                   let textView = notification.object as? NSTextView
             else { return }
             parent.text = textView.string
-            let data = Self.rtfData(from: textView)
-            lastRTFData = data
-            parent.rtfData = data
+            // Keep the text binding immediate, but defer the expensive RTFD
+            // archive until typing pauses briefly.
+            pendingRTFSerialization?.cancel()
+            lastRTFData = parent.rtfData
+            var work: DispatchWorkItem?
+            work = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let textView, let work, !work.isCancelled else { return }
+                let data = Self.rtfData(from: textView)
+                self.lastRTFData = data
+                self.parent.rtfData = data
+                self.pendingRTFSerialization = nil
+            }
+            pendingRTFSerialization = work
+            if let work {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+            }
         }
 
         func loadIfNeeded(textView: NSTextView, text: String, rtfData: Data?) {
+            guard pendingRTFSerialization == nil else { return }
             if let rtfData, rtfData != lastRTFData {
                 load(textView: textView, text: text, rtfData: rtfData)
             } else if rtfData == nil, textView.string != text {

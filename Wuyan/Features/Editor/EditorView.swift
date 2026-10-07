@@ -99,7 +99,12 @@ struct EditorView: View {
 
             editorFormattingBar
 
-            RichTextEditor(text: $viewModel.body, rtfData: $viewModel.bodyRTF, controller: richTextController)
+            RichTextEditor(
+                text: $viewModel.body,
+                rtfData: $viewModel.bodyRTF,
+                controller: richTextController,
+                onImagePasted: handlePastedImage
+            )
                 .background(Palette.paper)
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     handleDrop(providers)
@@ -380,6 +385,21 @@ struct EditorView: View {
         panel.allowedContentTypes = [.image, .movie, .audio]
         if panel.runModal() == .OK {
             viewModel.importMedia(urls: panel.urls, appState: appState)
+        }
+    }
+
+    private func handlePastedImage(_ image: NSImage) {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let data = bitmap.representation(using: .png, properties: [:])
+        else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wuyan-paste-(UUID().uuidString).png")
+        do {
+            try data.write(to: url, options: .atomic)
+            viewModel.importMedia(urls: [url], appState: appState, cleanupAfterImport: [url])
+        } catch {
+            appState.errorMessage = "剪贴板图片无法导入媒体库：(error.localizedDescription)"
         }
     }
 
