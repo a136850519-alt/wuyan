@@ -89,7 +89,7 @@ struct EditorView: View {
 
     private var writingPane: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if viewModel.externalUpdateDetected {
+            if viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
                 externalUpdateBanner
             }
             dateAnchor
@@ -108,7 +108,7 @@ struct EditorView: View {
             HStack {
                 Text("\(viewModel.nonWhitespaceCount) 字")
                 Spacer()
-                if viewModel.externalUpdateDetected {
+                if viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
                     Text("已暂停自动保存")
                 } else if viewModel.isDirty {
                     Text("正在保存…")
@@ -126,25 +126,29 @@ struct EditorView: View {
         .background(Palette.paper)
     }
 
-    /// 外部更新横幅：同步/天气定位改写了当前条目且本地有未保存修改时出现，
-    /// 替代原先反复弹出的「条目在保存前已被其它操作更新」全局弹窗。
+    /// 外部更新横幅：同时覆盖未保存编辑暂停和已保存版本冲突留档两种情况。
     private var externalUpdateBanner: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text("该条目在后台已被更新（同步或天气/定位写入）")
+                Text(viewModel.externalConflictCopyDetected ? "你刚才的版本已另存到冲突列表" : "该条目在后台已被更新（同步或天气/定位写入）")
                     .font(.callout.weight(.semibold))
-                Text("自动保存已暂停，你的编辑仍在编辑器中。")
+                Text(viewModel.externalConflictCopyDetected ? "当前编辑器已显示远端版本，可在设置 › 冲突列表中查看并恢复。" : "自动保存已暂停，你的编辑仍在编辑器中。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("以我的编辑为准") {
-                viewModel.keepCurrentEdits(appState: appState)
-            }
-            Button("重新载入") {
-                viewModel.reloadFromDatabase(appState: appState)
+            if viewModel.externalConflictCopyDetected {
+                Button("查看冲突列表") { appState.sidebarSelection = .settings }
+                Button("关闭提示") { viewModel.externalConflictCopyDetected = false }
+            } else {
+                Button("以我的编辑为准") {
+                    viewModel.keepCurrentEdits(appState: appState)
+                }
+                Button("重新载入") {
+                    viewModel.reloadFromDatabase(appState: appState)
+                }
             }
         }
         .padding(10)

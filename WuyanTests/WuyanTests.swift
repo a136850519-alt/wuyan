@@ -502,6 +502,23 @@ struct FTSTrigramSearchTests {
 @Suite("Sync Engine")
 struct SyncEngineBasicTests {
 
+    @Test("日札条件写入拒绝并发覆盖")
+    func dayNoteConditionalWriteRejectsStaleHash() throws {
+        let db = try AppDatabase.makeInMemory()
+        let original = DayNote(date: "2026-07-10", rawSummary: "旧", poeticLine: "旧")
+        try db.dayNoteDAO.upsert(original)
+        var current = original
+        current.rawSummary = "新"
+        try db.dayNoteDAO.upsert(current)
+
+        var remote = current
+        remote.rawSummary = "远端"
+        #expect(throws: EntrySaveError.self) {
+            try db.dayNoteDAO.upsert(remote, expectedHash: Hashing.dayNoteHash(original))
+        }
+        #expect(try db.dayNoteDAO.note(dayKey: original.date)?.rawSummary == "新")
+    }
+
     @Test("Conditional manifest writes reject a stale version")
     func conditionalManifestWriteRejectsStaleVersion() async throws {
         let mock = MockRemoteStorageProvider()

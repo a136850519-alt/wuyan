@@ -246,7 +246,8 @@ actor SyncEngine {
                 progress.phase = "正在同步日札"
                 await self.report(progress)
                 report.pulled += try await pullRemoteDayNotes(
-                    from: manifest, localHashes: dayNoteHashes, baselines: dayNoteBaselines, progress: &progress
+                    from: manifest, localHashes: dayNoteHashes, baselines: dayNoteBaselines,
+                    report: &report, progress: &progress
                 )
             }
             try await applyRemotePurges(manifest: &manifest, report: &report)
@@ -1555,6 +1556,7 @@ actor SyncEngine {
         from manifest: Manifest,
         localHashes: [String: String],
         baselines: [String: String],
+        report: inout SyncReport,
         progress: inout SyncProgress
     ) async throws -> Int {
         var pulled = 0
@@ -1579,7 +1581,14 @@ actor SyncEngine {
                 // 本地没有这条 → 拉取并确认基线。
                 let data = try await provider.get(remote.path)
                 let note = try decode(DayNote.self, from: data)
-                try database.dayNoteDAO.upsert(note)
+                do {
+                    try database.dayNoteDAO.upsert(note, expectedHash: nil)
+                } catch EntrySaveError.concurrentModification {
+                    // A local note appeared after the snapshot was read. Keep
+                    // the remote losing version in the day-note conflict log.
+                    try database.dayNoteDAO.saveConflictCopy(note)
+                    WuyanLog.sync.warning("日札 (remote.date) 在拉取期间被本地创建，远端版本已留档")
+                }
                 try database.dayNoteDAO.setBaseline(date: remote.date, hash: remote.hash)
                 pulled += 1
                 progress.completedUnitCount += 1
@@ -1592,9 +1601,14 @@ actor SyncEngine {
                 // 仅远端修改：拉取远端并更新基线。
                 let data = try await provider.get(remote.path)
                 let note = try decode(DayNote.self, from: data)
-                try database.dayNoteDAO.upsert(note)
-                try database.dayNoteDAO.setBaseline(date: remote.date, hash: remote.hash)
-                pulled += 1
+                do {
+                    try database.dayNoteDAO.upsert(note, expectedHash: localHash)
+                    try database.dayNoteDAO.setBaseline(date: remote.date, hash: remote.hash)
+                    pulled += 1
+                } catch EntrySaveError.concurrentModification {
+                    try database.dayNoteDAO.saveConflictCopy(note)
+                    WuyanLog.sync.warning("日札 (remote.date) 在拉取期间再次修改，远端版本已留档")
+                }
             } else {
                 // 双端修改或无基线：保留本地版本并把远端落败版本留档，
                 // 由推送阶段把本地版本写回远端，避免静默丢失另一端的日札。

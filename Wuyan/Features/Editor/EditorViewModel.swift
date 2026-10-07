@@ -23,6 +23,9 @@ final class EditorViewModel: ObservableObject {
     /// 横幅状态：当前条目在后台被外部更新（同步拉取/天气定位回写），且本地还有
     /// 未保存修改。出现时自动保存暂停，由用户选择「以当前编辑为准」或「重新载入」。
     @Published var externalUpdateDetected = false
+    /// 当前条目的旧版本已被同步留档到冲突列表，即使编辑器当时没有未保存输入
+    /// 也要给出可见提示。
+    @Published var externalConflictCopyDetected = false
     /// R1-4: 缓存非空白字数，避免 View body 中每次 body 变化都 O(n) 重算
     @Published var nonWhitespaceCount: Int = 0
 
@@ -83,6 +86,7 @@ final class EditorViewModel: ObservableObject {
             self.entry = nil
             loadedContentHash = nil
             externalUpdateDetected = false
+            externalConflictCopyDetected = false
             restartObservation(id: nil, appState: appState)
             return
         }
@@ -92,10 +96,12 @@ final class EditorViewModel: ObservableObject {
                 entry = nil
                 loadedContentHash = nil
                 externalUpdateDetected = false
+                externalConflictCopyDetected = false
                 restartObservation(id: nil, appState: appState)
                 return
             }
             externalUpdateDetected = false
+            externalConflictCopyDetected = false
             apply(fetched)
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -210,6 +216,7 @@ final class EditorViewModel: ObservableObject {
             loadedContentHash = nil
             isDirty = false
             externalUpdateDetected = false
+            externalConflictCopyDetected = false
             appState.selectedEntryId = nil
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -352,6 +359,7 @@ final class EditorViewModel: ObservableObject {
             loadedContentHash = nil
             isDirty = false
             externalUpdateDetected = false
+            externalConflictCopyDetected = false
             appState.selectedEntryId = nil
         } catch {
             appState.errorMessage = error.localizedDescription
@@ -489,6 +497,7 @@ final class EditorViewModel: ObservableObject {
             loadedContentHash = nil
             isDirty = false
             externalUpdateDetected = false
+            externalConflictCopyDetected = false
             appState.selectedEntryId = nil
             return
         }
@@ -497,6 +506,7 @@ final class EditorViewModel: ObservableObject {
         guard fetched.contentHash != loadedContentHash else { return }
         if !isDirty {
             apply(fetched)
+            externalConflictCopyDetected = (try? appState.entries.hasConflictCopy(id: fetched.id)) == true
         } else if let current = entry, Self.editorFieldsEqual(fetched, current) {
             rebase(onto: fetched)
         } else if !externalUpdateDetected {
