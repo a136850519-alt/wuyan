@@ -104,9 +104,15 @@ struct AIAssistantView: View {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         run {
-            // RAG and the degraded cloud path only need recent context. Avoid
-            // loading every bodyRTF blob on the main actor for each question.
-            let entries = (try? appState.entries.recentEntries(limit: AIService.cloudContextMaxEntries)) ?? []
+            // Local Ollama uses the complete plain-text corpus for semantic
+            // retrieval. Cloud providers receive a larger bounded candidate
+            // set and AIService applies the final privacy/size limit.
+            let entries: [Entry]
+            if appState.aiService.requiresCloudConsent {
+                entries = (try? appState.entries.recentEntries(limit: 30)) ?? []
+            } else {
+                entries = (try? appState.entries.aiEntries()) ?? []
+            }
             let answer = try await appState.aiService.ask(trimmed, entries: entries)
             await MainActor.run {
                 sourceEntryIds = answer.sourceEntryIds

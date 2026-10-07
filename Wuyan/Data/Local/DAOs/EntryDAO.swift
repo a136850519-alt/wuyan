@@ -227,6 +227,24 @@ public struct EntryDAO: EntryRepository {
         }
     }
 
+    /// Full-text entries for local semantic search. The query deliberately
+    /// excludes the persisted RTFD blob; the plain body is enough for
+    /// embeddings and avoids loading attachment data into the actor that
+    /// initiated the request.
+    func aiEntries() throws -> [Entry] {
+        try writer.read { db in
+            try Entry.fetchAll(db, sql: """
+                SELECT id, boardId, dayDate, journalDate, createdAt, updatedAt,
+                       title, body, tags, mood, NULL AS bodyRTF, weatherJson,
+                       locationJson, mediaIds, isFavorite, isDraft, contentHash,
+                       dirty, deleted
+                FROM entry
+                WHERE deleted = 0
+                ORDER BY journalDate DESC, updatedAt DESC
+                """)
+        }
+    }
+
     /// 按业务时间范围读取完整条目，供回顾等明确范围的 AI 功能使用。
     /// 查询在数据库侧过滤，避免把多年正文全部加载到主线程后再截取。
     func entries(since date: Date) throws -> [Entry] {

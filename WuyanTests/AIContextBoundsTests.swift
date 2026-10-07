@@ -8,6 +8,7 @@ private final class RecordingAIProvider: AIProvider, @unchecked Sendable {
     let destinationDescription = "测试 AI"
     private(set) var completedMessages: [[AIMessage]] = []
     private(set) var embedCallCount = 0
+    private(set) var embeddedTextCount = 0
 
     init(isLocal: Bool, supportsEmbeddings: Bool) {
         self.isLocal = isLocal
@@ -28,6 +29,7 @@ private final class RecordingAIProvider: AIProvider, @unchecked Sendable {
 
     func embed(_ texts: [String]) async throws -> [[Float]] {
         embedCallCount += 1
+        embeddedTextCount += texts.count
         return texts.map { _ in [0] }
     }
 }
@@ -69,6 +71,14 @@ struct AIContextBoundsTests {
         let answer = try await service.ask("问题", entries: entries(count: 10))
         #expect(answer.retrievalWasDegraded)
         #expect(provider.embedCallCount == 0)
+    }
+
+    @Test("本地语义检索接收超过八篇候选")
+    func localSemanticSearchUsesFullCorpus() async throws {
+        let provider = RecordingAIProvider(isLocal: true, supportsEmbeddings: true)
+        let service = AIService(provider: provider, isEnabled: true)
+        _ = try await service.ask("问题", entries: entries(count: 12, bodyLength: 40))
+        #expect(provider.embeddedTextCount > 8)
     }
 
     @Test("写作引导最多使用五篇最近条目")
