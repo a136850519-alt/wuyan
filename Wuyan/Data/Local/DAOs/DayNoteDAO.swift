@@ -27,6 +27,22 @@ public struct DayNoteDAO: DayNoteRepository {
         }
     }
 
+    /// Conditional remote replacement. `expectedHash == nil` means the date
+    /// must not exist yet; an existing or concurrently edited note is rejected.
+    func upsert(_ note: DayNote, expectedHash: String?) throws {
+        try writer.write { db in
+            let current = try DayNote.fetchOne(db, key: note.date)
+            if let expectedHash {
+                guard let current, Hashing.dayNoteHash(current) == expectedHash else {
+                    throw EntrySaveError.concurrentModification(UUID())
+                }
+            } else if current != nil {
+                throw EntrySaveError.concurrentModification(UUID())
+            }
+            try note.save(db)
+        }
+    }
+
     public func all() throws -> [DayNote] {
         try writer.read { db in
             try DayNote
@@ -81,6 +97,34 @@ public struct DayNoteDAO: DayNoteRepository {
                     """,
                     arguments: [item.date, item.hash, Date()]
                 )
+            }
+        }
+    }
+
+    /// Preserve the losing side when two devices edit the same day note.
+    /// The payload is a JSON encoded DayNote so it can be recovered without
+    /// changing the synchronization protocol.
+    func saveConflictCopy(_ note: DayNote) throws {
+        let payload = try JSONEncoder.wuyan.encode(note)
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT INTO daynote_conflict(id, date, payload, createdAt) VALUES (?, ?, ?, ?)",
+                arguments: [UUID().uuidString, note.date, String(data: payload, encoding: .utf8) ?? "{}", Date()]
+            )
+        }
+    }
+
+    func conflictCopies(date: String? = nil) throws -> [DayNote] {
+        try writer.read { db in
+            let rows: [String]
+            if let date {
+                rows = try String.fetchAll(db, sql: "SELECT payload FROM daynote_conflict WHERE date = ? ORDER BY createdAt DESC", arguments: [date])
+            } else {
+                rows = try String.fetchAll(db, sql: "SELECT payload FROM daynote_conflict ORDER BY createdAt DESC")
+            }
+            return rows.compactMap { payload in
+                guard let data = payload.data(using: .utf8) else { return nil }
+                return try? JSONDecoder.wuyan.decode(DayNote.self, from: data)
             }
         }
     }

@@ -235,6 +235,36 @@ public final class AppDatabase {
                 table.column("deletedAt", .datetime).notNull()
             }
         }
+        migrator.registerMigration("v15-conflict-copy-ids") { db in
+            // A single entry can conflict repeatedly. Keep each snapshot as a
+            // separate row instead of replacing the previous one by entryId.
+            try db.execute(sql: "ALTER TABLE conflict_copy RENAME TO conflict_copy_legacy")
+            try db.create(table: "conflict_copy") { table in
+                table.column("id", .text).primaryKey()
+                table.column("entryId", .text).notNull()
+                table.column("payload", .text).notNull()
+                table.column("remotePath", .text).notNull()
+                table.column("createdAt", .datetime).notNull()
+            }
+            let rows = try Row.fetchAll(db, sql: "SELECT entryId, payload, remotePath, createdAt FROM conflict_copy_legacy")
+            for row in rows {
+                try db.execute(
+                    sql: "INSERT INTO conflict_copy(id, entryId, payload, remotePath, createdAt) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [UUID().uuidString, row["entryId"], row["payload"], row["remotePath"], row["createdAt"]]
+                )
+            }
+            try db.drop(table: "conflict_copy_legacy")
+            try db.create(index: "idx_conflict_copy_entry", on: "conflict_copy", columns: ["entryId"])
+        }
+        migrator.registerMigration("v16-daynote-conflicts") { db in
+            try db.create(table: "daynote_conflict") { table in
+                table.column("id", .text).primaryKey()
+                table.column("date", .text).notNull()
+                table.column("payload", .text).notNull()
+                table.column("createdAt", .datetime).notNull()
+            }
+            try db.create(index: "idx_daynote_conflict_date", on: "daynote_conflict", columns: ["date"])
+        }
         return migrator
     }
 }

@@ -21,11 +21,14 @@ public enum TimelineFilter: Equatable {
 
 public enum EntrySaveError: LocalizedError {
     case concurrentModification(UUID)
+    case entryRemoved(UUID)
 
     public var errorDescription: String? {
         switch self {
         case let .concurrentModification(id):
             return "条目在保存前已被其它操作更新（\(id.uuidString.prefix(8))）。已保留当前编辑内容，请重新载入后再保存。"
+        case let .entryRemoved(id):
+            return "条目已被移除，未恢复原条目（\(id.uuidString.prefix(8))）。"
         }
     }
 }
@@ -252,10 +255,13 @@ public struct EntryDAO: EntryRepository {
         var entry = entry
         entry.refreshForSave()
         try writer.write { db in
-            if let expectedContentHash,
-               let current = try Entry.fetchOne(db, key: entry.id.uuidString),
-               current.contentHash != expectedContentHash {
-                throw EntrySaveError.concurrentModification(entry.id)
+            if let expectedContentHash {
+                guard let current = try Entry.fetchOne(db, key: entry.id.uuidString) else {
+                    throw EntrySaveError.entryRemoved(entry.id)
+                }
+                guard current.contentHash == expectedContentHash else {
+                    throw EntrySaveError.concurrentModification(entry.id)
+                }
             }
             try entry.save(db)
         }
@@ -288,7 +294,44 @@ public struct EntryDAO: EntryRepository {
     /// D02：在单一事务内落地远端条目（板块/日札/正文/附件元数据/基线），
     /// 避免中途失败留下「正文在、附件记录缺」的半成品状态。
     /// 已存在的本地附件记录优先保留——其 localPath 指向已下载的文件，不能被远端的 nil 覆盖。
-    func saveRemoteFull(entry: Entry, board: Board?, dayNote: DayNote?, mediaAssets: [MediaAsset]) throws {
+    func saveRemoteFull(entry: Entry, board: Board?, dayNote: DayNote?, mediaAssets: [MediaAsset], expectedLocalHash: String?) throws {
+        try writer.write { db in
+            let current = try Entry.fetchOne(db, key: entry.id.uuidString)
+            if let expectedLocalHash {
+                guard current?.contentHash == expectedLocalHash else {
+                    throw EntrySaveError.concurrentModification(entry.id)
+                }
+            } else if current != nil {
+                throw EntrySaveError.concurrentModification(entry.id)
+            }
+            if let board, try Board.fetchOne(db, key: board.id.uuidString) == nil {
+                try board.save(db)
+            }
+            try dayNote?.save(db)
+            var entry = entry
+            entry.dirty = false
+            try entry.save(db)
+            for var asset in mediaAssets {
+                guard try MediaAsset.fetchOne(db, key: asset.id.uuidString) == nil else { continue }
+                asset.localPath = nil
+                asset.thumbnailPath = nil
+                try asset.insert(db)
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO sync_baseline(entryId, hash, updatedAt)
+                VALUES (?, ?, ?)
+                ON CONFLICT(entryId) DO UPDATE SET hash = excluded.hash, updatedAt = excluded.updatedAt
+                """,
+                arguments: [entry.id.uuidString, entry.contentHash, entry.updatedAt]
+            )
+        }
+    }
+
+    /// Legacy callers that intentionally replace an existing row. Synchronization
+    /// paths use the conditional overload above so an in-flight editor cannot be
+    /// silently overwritten.
+    func saveRemoteFullUnconditionally(entry: Entry, board: Board?, dayNote: DayNote?, mediaAssets: [MediaAsset]) throws {
         try writer.write { db in
             if let board, try Board.fetchOne(db, key: board.id.uuidString) == nil {
                 try board.save(db)
@@ -544,25 +587,27 @@ public struct EntryDAO: EntryRepository {
     func saveConflictCopy(entry: Entry, envelope: Data, remotePath: String) throws {
         try writer.write { db in
             try db.execute(
-                sql: "INSERT INTO conflict_copy(entryId, payload, remotePath, createdAt) VALUES (?, ?, ?, ?) ON CONFLICT(entryId) DO UPDATE SET payload = excluded.payload, remotePath = excluded.remotePath, createdAt = excluded.createdAt",
-                arguments: [entry.id.uuidString, String(data: envelope, encoding: .utf8), remotePath, Date()]
+                sql: "INSERT INTO conflict_copy(id, entryId, payload, remotePath, createdAt) VALUES (?, ?, ?, ?, ?)",
+                arguments: [UUID().uuidString, entry.id.uuidString, String(data: envelope, encoding: .utf8), remotePath, Date()]
             )
         }
     }
 
     /// 全部待处理的冲突副本（按时间升序）。
-    func conflictCopies() throws -> [(entryId: UUID, envelope: EntryEnvelope, createdAt: Date)] {
+    func conflictCopies() throws -> [(id: UUID, entryId: UUID, envelope: EntryEnvelope, createdAt: Date)] {
         try writer.read { db in
-            let rows = try Row.fetchAll(db, sql: "SELECT entryId, payload, createdAt FROM conflict_copy ORDER BY createdAt ASC")
+            let rows = try Row.fetchAll(db, sql: "SELECT id, entryId, payload, createdAt FROM conflict_copy ORDER BY createdAt ASC, id ASC")
             return rows.compactMap { row in
-                guard let idString: String = row["entryId"],
-                      let id = UUID(uuidString: idString),
+                guard let copyIDString: String = row["id"],
+                      let copyID = UUID(uuidString: copyIDString),
+                      let entryIDString: String = row["entryId"],
+                      let entryID = UUID(uuidString: entryIDString),
                       let payloadString: String = row["payload"],
                       let data = payloadString.data(using: .utf8),
                       let envelope = try? JSONDecoder.wuyan.decode(EntryEnvelope.self, from: data),
                       let createdAt: Date = row["createdAt"]
                 else { return nil }
-                return (entryId: id, envelope: envelope, createdAt: createdAt)
+                return (id: copyID, entryId: entryID, envelope: envelope, createdAt: createdAt)
             }
         }
     }
@@ -577,6 +622,12 @@ public struct EntryDAO: EntryRepository {
     func dropConflictCopy(id: UUID) throws {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM conflict_copy WHERE entryId = ?", arguments: [id.uuidString])
+        }
+    }
+
+    func dropConflictCopy(copyID: UUID) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM conflict_copy WHERE id = ?", arguments: [copyID.uuidString])
         }
     }
 
@@ -620,7 +671,15 @@ public struct EntryDAO: EntryRepository {
     }
 
     public func softDelete(id: UUID) throws {
+        try softDelete(id: id, expectedContentHash: nil)
+    }
+
+    func softDelete(id: UUID, expectedContentHash: String?) throws {
         try writer.write { db in
+            guard let current = try Entry.fetchOne(db, key: id.uuidString) else { return }
+            if let expectedContentHash, current.contentHash != expectedContentHash {
+                throw EntrySaveError.concurrentModification(id)
+            }
             try db.execute(
                 sql: "UPDATE entry SET deleted = 1, dirty = 1, updatedAt = ? WHERE id = ?",
                 arguments: [Date(), id.uuidString]

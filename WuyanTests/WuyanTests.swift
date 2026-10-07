@@ -125,6 +125,8 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
     var files: [String: Data] = [:]
     var putCounts: [String: Int] = [:]
     var directories: Set<String> = []
+    /// Simulates a WebDAV server returning hrefs rooted at its base URL.
+    var hrefPrefix: String?
     var shouldFail5xx = false
     private let conditionalLock = NSLock()
     // C01/C02：在指定动作前插入并发操作或注入故障，用于复现提交/删除/媒体
@@ -142,7 +144,8 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
             throw RemoteStorageError.requestFailed(method: "PROPFIND", path: path, statusCode: 500)
         }
         return files.filter { $0.key.hasPrefix(path) }.map { key, data in
-            RemoteItem(path: key, isDirectory: false, size: Int64(data.count), etag: nil, modified: Date())
+            let href = hrefPrefix.map { $0 + key } ?? key
+            return RemoteItem(path: href, isDirectory: false, size: Int64(data.count), etag: nil, modified: Date())
         }
     }
 
@@ -191,18 +194,18 @@ final class MockRemoteStorageProvider: RemoteStorageProvider, @unchecked Sendabl
         ifMatch: String?,
         ifNoneMatch: Bool
     ) async throws {
-        conditionalLock.lock()
-        defer { conditionalLock.unlock() }
-        if ifNoneMatch, files[path] != nil {
-            throw RemoteStorageError.concurrentModification(path: path)
-        }
-        if let ifMatch {
-            guard let current = files[path], fingerprint(current) == ifMatch else {
+        try conditionalLock.withLock {
+            if ifNoneMatch, files[path] != nil {
                 throw RemoteStorageError.concurrentModification(path: path)
             }
+            if let ifMatch {
+                guard let current = files[path], fingerprint(current) == ifMatch else {
+                    throw RemoteStorageError.concurrentModification(path: path)
+                }
+            }
+            putCounts[path, default: 0] += 1
+            files[path] = data
         }
-        putCounts[path, default: 0] += 1
-        files[path] = data
     }
 
     func putChunked(_ path: String, fileURL: URL, chunkSize: Int) async throws {

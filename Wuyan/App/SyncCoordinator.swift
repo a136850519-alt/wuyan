@@ -230,11 +230,8 @@ final class SyncCoordinator: ObservableObject {
             return
         }
         Task {
-            // 先确认新口令能写入并读回钥匙串，再触碰远端密钥头。
-            // 远端重包装失败时恢复旧值，避免出现“远端新口令、本机旧口令”的不可用状态。
-            guard SecureSettings.save(newPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase) else {
-                await MainActor.run { completion?("新口令无法保存到钥匙串，远端未修改。") }
-                return
+            await MainActor.run {
+                self.syncProgress = SyncProgress(phase: "正在更换加密口令", completedUnitCount: 0, totalUnitCount: 1)
             }
             do {
                 let provider = try ProviderFactory.makeRemoteStorageProvider()
@@ -243,14 +240,22 @@ final class SyncCoordinator: ObservableObject {
                     oldPassphrase: currentPassphrase,
                     newPassphrase: newPassphrase
                 )
+                guard SecureSettings.save(newPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase) else {
+                    await MainActor.run {
+                        self.syncProgress = nil
+                        completion?("远端口令已更换，但新口令无法写入钥匙串。请立即保存新口令并暂停同步。")
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.unlockedCrypto = nil
                     self.downloadManifestCheckedFingerprint = nil
+                    self.syncProgress = nil
                     completion?(rewrote ? "口令已更换：数据密钥已用新口令重新包装，日记数据无需重传。" : "口令已保存：远端还没有加密索引，将在下次加密同步时生效。")
                 }
             } catch {
-                _ = SecureSettings.save(currentPassphrase, for: SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
                 await MainActor.run {
+                    self.syncProgress = nil
                     completion?("更换口令失败：\(error.localizedDescription)。旧口令保持不变。")
                 }
             }
@@ -329,6 +334,10 @@ final class SyncCoordinator: ObservableObject {
             setSyncError("同步或其它远端任务进行中，请完成后再归档。")
             return false
         }
+        guard year != AppState.year(fromDayKey: DayKey.today) else {
+            setSyncError("当前年份不能归档，请在年份结束后再归档。")
+            return false
+        }
         syncMessage = "\(year) 年归档中…"
         syncProgress = SyncProgress(phase: "\(year) 年归档准备中", completedUnitCount: 0, totalUnitCount: 1)
         clearSyncError()
@@ -356,6 +365,10 @@ final class SyncCoordinator: ObservableObject {
                         self.publish(progress: progress, message: "\(year) 年归档：\(progress.phase)")
                     }
                 }
+                // Archive is destructive locally. Establish a fresh baseline
+                // immediately before the archive so an offline device cannot
+                // publish an older copy over another device's newer edits.
+                _ = try await engine.syncNow()
                 // UI-02：引擎已完成推送 + 读回校验；只根据验证通过的快照清理本地。
                 let result = try await engine.archiveYear(year)
                 let uploaded = result.report.mediaUploaded
@@ -468,6 +481,7 @@ final class SyncCoordinator: ObservableObject {
                     )
                 }
                 var downloaded = 0
+                var failedAttachments = 0
                 for (index, entry) in yearEntries.enumerated() {
                     await MainActor.run {
                         self.syncProgress = SyncProgress(
@@ -477,18 +491,30 @@ final class SyncCoordinator: ObservableObject {
                             detail: entry.dayDate
                         )
                     }
-                    let assets = try database.mediaAssetDAO.allAssets(for: entry.mediaIds)
+                    let assets: [MediaAsset]
+                    do {
+                        assets = try database.mediaAssetDAO.allAssets(for: entry.mediaIds)
+                    } catch {
+                        failedAttachments += entry.mediaIds.count
+                        continue
+                    }
                     for asset in assets {
-                        if try await downloadMediaIfNeeded(asset, provider: provider, crypto: unlocked) != nil {
-                            downloaded += 1
-                        }
-                        if asset.type == .photo, asset.thumbnailPath == nil {
-                            _ = try? await downloadThumbnailIfNeeded(asset, provider: provider, crypto: unlocked)
+                        do {
+                            if try await downloadMediaIfNeeded(asset, provider: provider, crypto: unlocked) != nil {
+                                downloaded += 1
+                            }
+                            if asset.type == .photo, asset.thumbnailPath == nil {
+                                _ = try? await downloadThumbnailIfNeeded(asset, provider: provider, crypto: unlocked)
+                            }
+                        } catch {
+                            failedAttachments += 1
+                            WuyanLog.sync.warning("下载 \(year) 年附件失败，正文仍保留：\(error.localizedDescription)")
                         }
                     }
                 }
                 await MainActor.run {
-                    syncMessage = "\(year) 年下载完成：本地附件 \(downloaded)。"
+                    let suffix = failedAttachments > 0 ? "，另有 \(failedAttachments) 个附件待重试" : ""
+                    syncMessage = "\(year) 年下载完成：本地附件 \(downloaded)\(suffix)。"
                     syncProgress = nil
                     // R0-2: 通知 AppState 将该年从 archivedYears 移除
                     onDownloadComplete?(year)

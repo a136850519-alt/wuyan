@@ -64,6 +64,12 @@ actor SyncEngine {
     /// 这里限制转发频率；阶段变化与完成时刻不受节流，保证状态不被吞。
     private var lastReportedAt: ContinuousClock.Instant = .now - .seconds(3600)
     private var lastReportedProgress: SyncProgress?
+    /// IDs/dates actually changed by this sync round. Concurrent manifest
+    /// merges must apply only these local mutations; untouched stale values
+    /// must never win over a newer remote index.
+    private var changedEntryIDs: Set<UUID> = []
+    private var changedDayNoteDates: Set<String> = []
+    private var changedBoardIDs: Set<UUID> = []
     private static let reportThrottleInterval: Duration = .milliseconds(250)
 
     init(
@@ -107,6 +113,9 @@ actor SyncEngine {
 
     func syncNow() async throws -> SyncReport {
         status = .syncing
+        changedEntryIDs.removeAll()
+        changedDayNoteDates.removeAll()
+        changedBoardIDs.removeAll()
         remoteMediaMigrated = false
         var progress = SyncProgress(phase: "准备同步", completedUnitCount: 0, totalUnitCount: 7)
         do {
@@ -172,7 +181,7 @@ actor SyncEngine {
                 manifest.migration = RemoteMigrationState(
                     direction: RemoteMigrationState.decrypt,
                     startedAt: Date(),
-                    startedBy: Self.deviceId()
+                    startedBy: deviceId()
                 )
                 manifest = try await publishEncryptedManifest(manifest, loadedETag: manifestETag)
             }
@@ -182,7 +191,7 @@ actor SyncEngine {
                     manifest.migration = RemoteMigrationState(
                         direction: RemoteMigrationState.encrypt,
                         startedAt: Date(),
-                        startedBy: Self.deviceId()
+                        startedBy: deviceId()
                     )
                 }
                 manifest = try await publishEncryptedManifest(manifest, loadedETag: manifestETag)
@@ -252,6 +261,15 @@ actor SyncEngine {
 
             // D16：板块不只是首次同步时补缺；远端名称、排序和隐私开关变化也要
             // 落到本地。删除仍保留本地条目约束，避免无条件删除有本地引用的板块。
+            let localBoardsBeforePull = try database.boardDAO.allIncludingDeleted()
+            let remoteBoardsByID = Dictionary(uniqueKeysWithValues: manifest.boards.map { ($0.id, $0) })
+            for localBoard in localBoardsBeforePull {
+                if let remoteBoard = remoteBoardsByID[localBoard.id] {
+                    if localBoard.updatedAt > remoteBoard.updatedAt { changedBoardIDs.insert(localBoard.id) }
+                } else {
+                    changedBoardIDs.insert(localBoard.id)
+                }
+            }
             for remoteBoard in manifest.boards {
                 guard let local = try database.boardDAO.board(id: remoteBoard.id) else {
                     try database.boardDAO.saveRemote(remoteBoard)
@@ -343,7 +361,7 @@ actor SyncEngine {
                     manifest.migration = RemoteMigrationState(
                         direction: RemoteMigrationState.encrypt,
                         startedAt: Date(),
-                        startedBy: Self.deviceId()
+                        startedBy: deviceId()
                     )
                 }
                 progress.phase = writesPlaintext ? "正在迁移远端为明文" : "正在迁移远端明文→加密"
@@ -456,6 +474,9 @@ actor SyncEngine {
     /// 任何不一致抛错，调用方绝不能据此清理本地唯一副本。
     func archiveYear(_ year: Int) async throws -> ArchiveResult {
         status = .syncing
+        changedEntryIDs.removeAll()
+        changedDayNoteDates.removeAll()
+        changedBoardIDs.removeAll()
         var progress = SyncProgress(phase: "\(year) 年归档准备中", completedUnitCount: 0, totalUnitCount: 1)
         do {
             await self.report(progress)
@@ -463,6 +484,11 @@ actor SyncEngine {
             let (loadedManifest, manifestETag, manifestExisted) = try await loadManifest()
             let baseManifestRevision = loadedManifest.revision
             var manifest = loadedManifest
+
+            // Archiving deletes the local copy after the upload. Refuse to
+            // start if the remote index has moved past this device's baseline;
+            // otherwise an offline archive could roll another device back.
+            try validateArchiveVersions(year: year, manifest: manifest)
 
             // B04：归档与普通同步共用一套加密提交协议。发现远端仍是明文/旧格式时，
             // 归档先发布数据密钥头（内容不变）再写任何密文对象——中断后远端要么
@@ -474,7 +500,7 @@ actor SyncEngine {
                     manifest.migration = RemoteMigrationState(
                         direction: RemoteMigrationState.encrypt,
                         startedAt: Date(),
-                        startedBy: Self.deviceId()
+                        startedBy: deviceId()
                     )
                 }
                 manifest = try await publishEncryptedManifest(manifest, loadedETag: manifestETag)
@@ -564,6 +590,33 @@ actor SyncEngine {
         }
     }
 
+    private func validateArchiveVersions(year: Int, manifest: Manifest) throws {
+        let prefix = String(format: "%04d-", year)
+        var conflicts: [String] = []
+        let remoteEntries = Dictionary(uniqueKeysWithValues: manifest.entries.map { ($0.id, $0) })
+        for entry in try database.entryDAO.timeline(filter: .year(year)) {
+            guard let remote = remoteEntries[entry.id] else { continue }
+            if remote.deleted {
+                conflicts.append(entry.dayDate)
+                continue
+            }
+            if remote.hash == entry.contentHash { continue }
+            let baseline = try database.entryDAO.baselineHash(id: entry.id)
+            if baseline != remote.hash { conflicts.append(entry.dayDate) }
+        }
+        let remoteNotes = Dictionary(uniqueKeysWithValues: manifest.daynotes.map { ($0.date, $0) })
+        for note in try database.dayNoteDAO.all() where note.date.hasPrefix(prefix) {
+            guard let remote = remoteNotes[note.date] else { continue }
+            let localHash = Hashing.dayNoteHash(note)
+            if remote.hash == localHash { continue }
+            let baseline = try database.dayNoteDAO.allBaselineHashes()[note.date]
+            if baseline != remote.hash { conflicts.append(note.date) }
+        }
+        if !conflicts.isEmpty {
+            throw RemoteStorageError.archiveRequiresSync(dates: Array(Set(conflicts)).sorted())
+        }
+    }
+
     /// UI-02：归档读回校验。条目：GET 推送路径并比对内容指纹；
     /// 媒体：GET 远端对象（解密）后比对 sha256。任何不一致都抛错阻断归档完成。
     /// C01：对象路径是每次提交不复用的身份，读回校验必须用推送时实际写入的
@@ -601,10 +654,14 @@ actor SyncEngine {
                 let remotePath = crypto == nil || writesPlaintext
                     ? SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
                     : SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
-                let mediaData = try await provider.get(remotePath)
-                let plain = (writesPlaintext || crypto == nil) ? mediaData : try decodeRaw(mediaData)
-                let digest = SHA256.hash(data: plain)
-                let hex = digest.map { String(format: "%02x", $0) }.joined()
+                let hex: String
+                if crypto == nil || writesPlaintext {
+                    hex = try await remoteSHA256(remotePath, expectedSize: asset.size)
+                } else {
+                    let mediaData = try await provider.get(remotePath)
+                    let plain = try decodeRaw(mediaData)
+                    hex = SHA256.hash(data: plain).map { String(format: "%02x", $0) }.joined()
+                }
                 // A08：即使本机没有文件副本（localPath 为 nil），远端对象也必须
                 // 真实可读且与元数据指纹一致，绝不能只凭「路径存在」放行。
                 guard hex == asset.sha256 else {
@@ -614,10 +671,17 @@ actor SyncEngine {
                    let thumbnailURL = asset.absoluteThumbnailPath,
                    FileManager.default.fileExists(atPath: thumbnailURL) {
                     let remoteThumbnailPath = SyncPaths.thumbnailPath(sha256: asset.sha256)
-                    let thumbnailData = try await provider.get(remoteThumbnailPath)
-                    let plainThumbnail = (writesPlaintext || crypto == nil) ? thumbnailData : try decodeRaw(thumbnailData)
-                    let localThumbnail = try Data(contentsOf: URL(fileURLWithPath: thumbnailURL))
-                    guard plainThumbnail == localThumbnail else {
+                    let sameThumbnail: Bool
+                    if crypto == nil || writesPlaintext {
+                        let localHash = try Hashing.sha256Hex(ofFileAt: URL(fileURLWithPath: thumbnailURL))
+                        sameThumbnail = try await remoteSHA256(remoteThumbnailPath, expectedSize: nil) == localHash
+                    } else {
+                        let thumbnailData = try await provider.get(remoteThumbnailPath)
+                        let plainThumbnail = try decodeRaw(thumbnailData)
+                        let localThumbnail = try Data(contentsOf: URL(fileURLWithPath: thumbnailURL))
+                        sameThumbnail = plainThumbnail == localThumbnail
+                    }
+                    guard sameThumbnail else {
                         throw RemoteStorageError.archiveVerificationFailed(path: remoteThumbnailPath)
                     }
                     _ = thumbnailPath
@@ -673,14 +737,58 @@ actor SyncEngine {
             for board in manifest.boards where (try database.boardDAO.board(id: board.id)) == nil {
                 try database.boardDAO.save(board)
             }
-            for remote in manifest.entries where remote.dayDate.hasPrefix(prefix) && !remote.deleted {
-                try await pullRemoteEntry(remote)
+            var report = SyncReport()
+            let localEntries = try database.entryDAO.timeline(filter: .year(year))
+            let localByID = Dictionary(uniqueKeysWithValues: localEntries.map { ($0.id, $0) })
+            for remote in manifest.entries where remote.dayDate.hasPrefix(prefix) {
+                let local = localByID[remote.id]
+                if remote.deleted {
+                    guard let local, !local.deleted else { continue }
+                    do {
+                        try database.entryDAO.softDelete(id: remote.id, expectedContentHash: local.contentHash)
+                    } catch EntrySaveError.concurrentModification {
+                        if let latest = try database.entryDAO.entry(id: remote.id), !latest.deleted {
+                            try await writeConflictCopy(latest)
+                            report.conflicts.append(remote.id)
+                            try database.entryDAO.softDelete(id: remote.id, expectedContentHash: latest.contentHash)
+                        }
+                    }
+                    pulled += 1
+                    continue
+                }
+                guard let local else {
+                    try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: nil, report: &report)
+                    pulled += 1
+                    continue
+                }
+                if local.contentHash == remote.hash { continue }
+                let baseline = try database.entryDAO.baselineHash(id: remote.id)
+                if baseline == remote.hash {
+                    // The remote side did not change since the last sync; keep
+                    // the unsynced local edit and its dirty flag.
+                    continue
+                }
+                if baseline != local.contentHash {
+                    try await writeConflictCopy(local)
+                    report.conflicts.append(remote.id)
+                }
+                try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: local.contentHash, report: &report)
                 pulled += 1
             }
             for remote in manifest.daynotes where remote.date.hasPrefix(prefix) {
                 let data = try await provider.get(remote.path)
                 let note = try decode(DayNote.self, from: data)
-                try database.dayNoteDAO.upsert(note)
+                let localHash = try database.dayNoteDAO.note(dayKey: remote.date).map(Hashing.dayNoteHash)
+                let baseline = try database.dayNoteDAO.allBaselineHashes()[remote.date]
+                if localHash == remote.hash { continue }
+                if baseline == remote.hash { continue }
+                guard baseline == localHash || localHash == nil else {
+                    // Both sides changed. Keep the local note for the next push,
+                    // but preserve the remote losing version locally.
+                    try database.dayNoteDAO.saveConflictCopy(note)
+                    continue
+                }
+                try database.dayNoteDAO.upsert(note, expectedHash: localHash)
                 // A02：拉取落地即确认基线，作为后续三方合并的参照。
                 try database.dayNoteDAO.setBaseline(date: note.date, hash: Hashing.dayNoteHash(note))
             }
@@ -705,7 +813,7 @@ actor SyncEngine {
         // 目录树一旦建好就基本不会再消失：命中缓存时只做一次轻量存在性校验，
         // 替代原先每次同步都串行发十几个 MKCOL 的固定开销。校验失败说明目录被外部清掉，重建并刷新缓存。
         let key = backendFingerprint.isEmpty ? "sync.remoteTreeReady" : "sync.remoteTreeReady.\(backendFingerprint)"
-        if UserDefaults.standard.bool(forKey: key) {
+        if (try? database.syncStateDAO.value(forKey: key)) == "1" {
             if try await provider.exists("/Wuyan/.sync/") { return }
         }
         try await provider.mkcolRecursive("/Wuyan/entries/")
@@ -714,7 +822,7 @@ actor SyncEngine {
         try await provider.mkcolRecursive("/Wuyan/media/thumbnails/")
         try await provider.mkcolRecursive("/Wuyan/.sync/")
         try await provider.mkcolRecursive("/Wuyan/.trash/")
-        UserDefaults.standard.set(true, forKey: key)
+        try database.syncStateDAO.set("1", forKey: key)
     }
 
     /// 读取远端索引。返回清单、读取时的版本标识（供条件写）以及远端是否已存在索引。
@@ -888,7 +996,13 @@ actor SyncEngine {
                 // closes the remaining read/modify/write race for ETag-capable backends.
                 if latest.revision != manifest.revision || latest.revision != expectedRevision {
                     mergedForeignRevision = latest.revision != expectedRevision
-                    manifest = Self.mergeManifests(latest, with: manifest)
+                    manifest = Self.mergeManifests(
+                        latest,
+                        with: manifest,
+                        changedEntryIDs: changedEntryIDs,
+                        changedDayNoteDates: changedDayNoteDates,
+                        changedBoardIDs: changedBoardIDs
+                    )
                     if let completedMigration, manifest.migration == completedMigration {
                         manifest.migration = nil
                     }
@@ -957,10 +1071,17 @@ actor SyncEngine {
         throw RemoteStorageError.concurrentModification(path: SyncPaths.manifest)
     }
 
-    private static func mergeManifests(_ latest: Manifest, with local: Manifest) -> Manifest {
+    private static func mergeManifests(
+        _ latest: Manifest,
+        with local: Manifest,
+        changedEntryIDs: Set<UUID> = [],
+        changedDayNoteDates: Set<String> = [],
+        changedBoardIDs: Set<UUID> = []
+    ) -> Manifest {
         var merged = latest
         var entryByID = Dictionary(uniqueKeysWithValues: latest.entries.map { ($0.id, $0) })
         for candidate in local.entries {
+            guard changedEntryIDs.contains(candidate.id) else { continue }
             guard let existing = entryByID[candidate.id] else {
                 entryByID[candidate.id] = candidate
                 continue
@@ -971,11 +1092,13 @@ actor SyncEngine {
         }
         merged.entries = Array(entryByID.values)
         var notes = Dictionary(uniqueKeysWithValues: latest.daynotes.map { ($0.date, $0) })
-        for note in local.daynotes where notes[note.date] == nil || note.updatedAt >= notes[note.date]!.updatedAt {
+        for note in local.daynotes where changedDayNoteDates.contains(note.date) &&
+            (notes[note.date] == nil || note.updatedAt >= notes[note.date]!.updatedAt) {
             notes[note.date] = note
         }
         merged.daynotes = Array(notes.values)
-        merged.boards = mergeBoardStates(remote: latest.boards, local: local.boards)
+        let changedBoards = local.boards.filter { changedBoardIDs.contains($0.id) }
+        merged.boards = mergeBoardStates(remote: latest.boards, local: changedBoards)
         var purgedByID = Dictionary(uniqueKeysWithValues: (latest.purged ?? []).map { ($0.id, $0.deletedAt) })
         for item in local.purged ?? [] where item.deletedAt > (purgedByID[item.id] ?? .distantPast) {
             purgedByID[item.id] = item.deletedAt
@@ -1073,8 +1196,10 @@ actor SyncEngine {
     ) async throws -> Int {
         var count = 0
         for remote in manifest.entries {
-            // 已归档年份：不拉回本地，保持本地腾空状态。
-            if let y = year(ofDayKey: remote.dayDate), archivedYears.contains(y) {
+            // 已归档年份只跳过本地已经腾空的条目。归档后在本机新写的条目
+            // 仍需接收其它设备更新，否则下一次推送会覆盖远端版本。
+            if let y = year(ofDayKey: remote.dayDate), archivedYears.contains(y),
+               snapshots[remote.id.uuidString] == nil {
                 progress.completedUnitCount += 1
                 continue
             }
@@ -1094,7 +1219,15 @@ actor SyncEngine {
                        }
                    }
                    if !snap.deleted {
-                        try database.entryDAO.softDelete(id: remote.id)
+                        do {
+                            try database.entryDAO.softDelete(id: remote.id, expectedContentHash: snap.contentHash)
+                        } catch EntrySaveError.concurrentModification {
+                            if let latest = try database.entryDAO.entry(id: remote.id), !latest.deleted {
+                                try await writeConflictCopy(latest)
+                                report.conflicts.append(remote.id)
+                                try database.entryDAO.softDelete(id: remote.id, expectedContentHash: latest.contentHash)
+                            }
+                        }
                         count += 1
                     }
                 }
@@ -1112,7 +1245,7 @@ actor SyncEngine {
                     continue
                 }
                 // 本地没有这条 → 拉取。
-                try await pullRemoteEntry(remote)
+                try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: nil, report: &report)
                 count += 1
                 progress.completedUnitCount += 1
                 continue
@@ -1129,7 +1262,7 @@ actor SyncEngine {
                 // 远端自上次同步未变，仅本地改动 → 本地优先，留给推送阶段，不要拉取覆盖本地编辑。
             } else if baseline == snap.contentHash {
                 // 本地自上次同步未变，仅远端改动 → 拉取远端。
-                try await pullRemoteEntry(remote)
+                try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: snap.contentHash, report: &report)
                 count += 1
             } else {
                 // 双方都变（或无 baseline 的独立创建）→ 冲突：留存本地副本后取远端。
@@ -1137,7 +1270,7 @@ actor SyncEngine {
                     try await writeConflictCopy(full)
                 }
                 report.conflicts.append(remote.id)
-                try await pullRemoteEntry(remote)
+                try await pullRemoteEntryWithRecovery(remote, expectedLocalHash: snap.contentHash, report: &report)
                 count += 1
             }
             progress.completedUnitCount += 1
@@ -1238,7 +1371,7 @@ actor SyncEngine {
         )
     }
 
-    private func pullRemoteEntry(_ remote: ManifestEntry) async throws {
+    private func pullRemoteEntry(_ remote: ManifestEntry, expectedLocalHash: String?) async throws {
         let data = try await provider.get(remote.path)
         let envelope = try decode(EntryEnvelope.self, from: data)
         // A02：信封内嵌的日札只是推送时刻的便捷快照。日札的合并权威在
@@ -1251,8 +1384,32 @@ actor SyncEngine {
             entry: envelope.entry,
             board: envelope.board,
             dayNote: localNote == nil ? envelope.dayNote : nil,
-            mediaAssets: envelope.mediaAssets ?? []
+            mediaAssets: envelope.mediaAssets ?? [],
+            expectedLocalHash: expectedLocalHash
         )
+    }
+
+    /// Applies a remote version only if the local row still has the hash that
+    /// was observed before the network request. If an editor saved meanwhile,
+    /// preserve that version as a conflict copy and retry against its new hash.
+    private func pullRemoteEntryWithRecovery(
+        _ remote: ManifestEntry,
+        expectedLocalHash: String?,
+        report: inout SyncReport
+    ) async throws {
+        do {
+            try await pullRemoteEntry(remote, expectedLocalHash: expectedLocalHash)
+        } catch EntrySaveError.concurrentModification {
+            guard let latest = try database.entryDAO.entry(id: remote.id) else {
+                try await pullRemoteEntry(remote, expectedLocalHash: nil)
+                return
+            }
+            try await writeConflictCopy(latest)
+            if !report.conflicts.contains(remote.id) {
+                report.conflicts.append(remote.id)
+            }
+            try await pullRemoteEntry(remote, expectedLocalHash: latest.contentHash)
+        }
     }
 
     // D05：manifest 内容指纹 = 全部条目/日札/板块规范化内容的 SHA256 摘要。
@@ -1402,7 +1559,7 @@ actor SyncEngine {
     ) async throws -> Int {
         var pulled = 0
         for remote in manifest.daynotes {
-            if let y = year(ofDayKey: remote.date), archivedYears.contains(y) {
+            if let y = year(ofDayKey: remote.date), archivedYears.contains(y), localHashes[remote.date] == nil {
                 progress.completedUnitCount += 1
                 continue
             }
@@ -1439,8 +1596,12 @@ actor SyncEngine {
                 try database.dayNoteDAO.setBaseline(date: remote.date, hash: remote.hash)
                 pulled += 1
             } else {
-                // 双端修改或无基线：本地优先，远端版本由本次推送覆盖。
-                WuyanLog.sync.warning("日札 \(remote.date) 双端均有修改且无法仲裁，保留本地版本并推送覆盖")
+                // 双端修改或无基线：保留本地版本并把远端落败版本留档，
+                // 由推送阶段把本地版本写回远端，避免静默丢失另一端的日札。
+                let data = try await provider.get(remote.path)
+                let remoteNote = try decode(DayNote.self, from: data)
+                try database.dayNoteDAO.saveConflictCopy(remoteNote)
+                WuyanLog.sync.warning("日札 \(remote.date) 双端均有修改，远端版本已保存到本地冲突留档")
             }
             progress.completedUnitCount += 1
         }
@@ -1479,6 +1640,7 @@ actor SyncEngine {
             } else {
                 manifest.entries.append(tombstone)
             }
+            changedEntryIDs.insert(tombstone.id)
         }
     }
 
@@ -1564,6 +1726,7 @@ actor SyncEngine {
                 indexes[entry.id] = manifest.entries.count
                 manifest.entries.append(item)
             }
+            changedEntryIDs.insert(entry.id)
             pushed += 1
             progress.completedUnitCount += 1
         }
@@ -1594,13 +1757,14 @@ actor SyncEngine {
             try await provider.put(path, data: data, contentType: "application/json")
             // B05：记录本机写入的日札版本对象路径，提交后登记孤儿由延迟 GC 处理。
             pushedPaths[note.date] = path
-            let item = ManifestDayNote(date: note.date, path: path, updatedAt: note.createdAt, hash: hash)
+            let item = ManifestDayNote(date: note.date, path: path, updatedAt: pushedAt, hash: hash)
             if let index = indexes[note.date] {
                 manifest.daynotes[index] = item
             } else {
                 indexes[note.date] = manifest.daynotes.count
                 manifest.daynotes.append(item)
             }
+            changedDayNoteDates.insert(note.date)
             pushed += 1
             progress.completedUnitCount += 1
         }
@@ -1727,12 +1891,16 @@ actor SyncEngine {
                 if let absolutePath = asset.absoluteLocalPath,
                    FileManager.default.fileExists(atPath: absolutePath),
                    try await provider.exists(remotePath) == false {
-                    let data = try Data(contentsOf: URL(fileURLWithPath: absolutePath))
-                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    let digest = try Hashing.sha256Hex(ofFileAt: URL(fileURLWithPath: absolutePath))
                     // 本地副本指纹不一致时不传损坏内容，但缩略图检查照常进行。
                     if digest == asset.sha256 {
                         try await provider.mkcolRecursive((remotePath as NSString).deletingLastPathComponent + "/")
-                        try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
+                        if crypto == nil || writesPlaintext {
+                            try await provider.putChunked(remotePath, fileURL: URL(fileURLWithPath: absolutePath), chunkSize: 8 * 1024 * 1024)
+                        } else {
+                            let data = try Data(contentsOf: URL(fileURLWithPath: absolutePath))
+                            try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
+                        }
                         repaired += 1
                         WuyanLog.sync.warning("巡检补传缺失的媒体对象：\(remotePath)")
                     }
@@ -1741,9 +1909,13 @@ actor SyncEngine {
                    FileManager.default.fileExists(atPath: thumbPath) {
                     let thumbRemote = SyncPaths.thumbnailPath(sha256: asset.sha256)
                     if try await provider.exists(thumbRemote) == false {
-                        let thumbData = try Data(contentsOf: URL(fileURLWithPath: thumbPath))
                         try await provider.mkcolRecursive("/Wuyan/media/thumbnails/")
-                        try await provider.put(thumbRemote, data: try encodeRaw(thumbData), contentType: "application/octet-stream")
+                        if crypto == nil || writesPlaintext {
+                            try await provider.putChunked(thumbRemote, fileURL: URL(fileURLWithPath: thumbPath), chunkSize: 512 * 1024)
+                        } else {
+                            let thumbData = try Data(contentsOf: URL(fileURLWithPath: thumbPath))
+                            try await provider.put(thumbRemote, data: try encodeRaw(thumbData), contentType: "application/octet-stream")
+                        }
                         repaired += 1
                         WuyanLog.sync.warning("巡检补传缺失的缩略图对象：\(thumbRemote)")
                     }
@@ -1955,7 +2127,7 @@ actor SyncEngine {
     }
 
     private func saveDeviceState(_ report: SyncReport) async throws {
-        let deviceId = Self.deviceId()
+        let deviceId = deviceId()
         let state = SyncDeviceState(
             deviceId: deviceId,
             syncedAt: Date(),
@@ -1966,6 +2138,31 @@ actor SyncEngine {
         )
         let data = try encode(state)
         try await provider.put(SyncPaths.deviceStatePath(deviceId: deviceId), data: data, contentType: "application/json")
+    }
+
+    /// Hash a plaintext remote object in bounded ranges. This keeps archive
+    /// verification and recovery audits from materializing large videos in
+    /// memory when the backend supports range reads.
+    private func remoteSHA256(_ path: String, expectedSize: Int64?) async throws -> String {
+        guard let size = try await provider.contentLength(path) else {
+            throw RemoteStorageError.archiveVerificationFailed(path: path)
+        }
+        if let expectedSize, expectedSize != size {
+            throw RemoteStorageError.archiveVerificationFailed(path: path)
+        }
+        var hasher = SHA256()
+        let chunkSize: Int64 = 8 * 1024 * 1024
+        var offset: Int64 = 0
+        while offset < size {
+            let end = min(size, offset + chunkSize)
+            let chunk = try await provider.getRange(path, bytes: offset..<end)
+            guard !chunk.isEmpty else {
+                throw RemoteStorageError.archiveVerificationFailed(path: path)
+            }
+            hasher.update(data: chunk)
+            offset += Int64(chunk.count)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func encode<T: Encodable>(_ value: T) throws -> Data {
@@ -2057,13 +2254,13 @@ actor SyncEngine {
         await progressHandler?(progress)
     }
 
-    private static func deviceId() -> String {
+    private func deviceId() -> String {
         let key = "sync.deviceId"
-        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+        if let existing = try? database.syncStateDAO.value(forKey: key), !existing.isEmpty {
             return existing
         }
         let created = UUID().uuidString
-        UserDefaults.standard.set(created, forKey: key)
+        try? database.syncStateDAO.set(created, forKey: key)
         return created
     }
 }

@@ -237,6 +237,7 @@ enum RemoteStorageError: LocalizedError {
     case archiveVerificationFailed(path: String)
     case multipartFailed(path: String, reason: String)
     case concurrentModification(path: String)
+    case archiveRequiresSync(dates: [String])
 
     var errorDescription: String? {
         switch self {
@@ -265,6 +266,8 @@ enum RemoteStorageError: LocalizedError {
             return "分片上传完成响应失败（\(path)）：\(reason)。远端对象未视为上传成功。"
         case let .concurrentModification(path):
             return "远端对象在提交期间被其它设备更新：\(path)。已重新合并或请稍后重试。"
+        case let .archiveRequiresSync(dates):
+            return "有 \(dates.count) 篇在其它设备上更新过，请先同步再归档（\(dates.prefix(3).joined(separator: "、"))）。"
         }
     }
 }

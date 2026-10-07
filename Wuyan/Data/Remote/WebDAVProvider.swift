@@ -49,7 +49,15 @@ struct WebDAVProvider: RemoteStorageProvider {
         )
         guard let http = response as? HTTPURLResponse else { return [] }
         if http.statusCode == 404 { return [] }
-        return WebDAVMultistatusParser.parse(data: data)
+        return WebDAVMultistatusParser.parse(data: data).compactMap { item in
+            guard let path = logicalPath(for: item.path, isDirectory: item.isDirectory) else {
+                WuyanLog.sync.warning("WebDAV PROPFIND 忽略 base URL 之外的 href：\(item.path)")
+                return nil
+            }
+            var normalizedItem = item
+            normalizedItem.path = path
+            return normalizedItem
+        }
     }
 
     func get(_ path: String) async throws -> Data {
@@ -227,7 +235,10 @@ struct WebDAVProvider: RemoteStorageProvider {
 
     func delete(_ path: String) async throws {
         let request = try request(path: path, method: "DELETE")
-        _ = try await send(request, method: "DELETE", path: path, allowed: [200, 202, 204, 404])
+        let (_, response) = try await send(request, method: "DELETE", path: path, allowed: [200, 202, 204, 404])
+        if (response as? HTTPURLResponse)?.statusCode == 404 {
+            WuyanLog.sync.warning("WebDAV DELETE 目标不存在：\(path)")
+        }
     }
 
     func exists(_ path: String) async throws -> Bool {
@@ -276,6 +287,28 @@ struct WebDAVProvider: RemoteStorageProvider {
             path = "/" + path
         }
         return path
+    }
+
+    /// WebDAV hrefs are server URLs, while the rest of the sync layer uses
+    /// paths relative to the configured base URL. Normalize both absolute URL
+    /// and absolute-path hrefs and retain collection trailing slashes.
+    private func logicalPath(for href: String, isDirectory: Bool) -> String? {
+        let decoded = href.removingPercentEncoding ?? href
+        let hrefPath: String
+        if let url = URL(string: decoded), url.scheme != nil {
+            hrefPath = url.path
+        } else {
+            hrefPath = decoded.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? decoded
+        }
+        var base = normalized(baseURL.path)
+        while base.count > 1, base.hasSuffix("/") { base.removeLast() }
+        var path = normalized(hrefPath)
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        guard base == "/" || path == base || path.hasPrefix(base + "/") else { return nil }
+        let suffix = base == "/" ? path : String(path.dropFirst(base.count))
+        var result = suffix.isEmpty ? "/" : normalized(suffix)
+        if isDirectory && !result.hasSuffix("/") { result += "/" }
+        return result
     }
 
     private func send(
