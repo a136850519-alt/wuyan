@@ -1,5 +1,48 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Intercept image paste/drop so the same 720px down-scaling path is used as
+/// the toolbar importer. Plain text continues through NSTextView unchanged.
+private final class WuyanTextView: NSTextView {
+    override func paste(_ sender: Any?) {
+        if insertImages(from: NSPasteboard.general) { return }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if insertImages(from: sender.draggingPasteboard) { return true }
+        return super.performDragOperation(sender)
+    }
+
+    private func insertImages(from pasteboard: NSPasteboard) -> Bool {
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? [])
+            .filter { UTType(filenameExtension: $0.pathExtension)?.conforms(to: .image) == true }
+        guard !urls.isEmpty else { return false }
+        for url in urls {
+            guard let image = NSImage(contentsOf: url) else { continue }
+            let attachment = NSTextAttachment()
+            attachment.image = scaled(image, maxWidth: 720)
+            let attributed = NSMutableAttributedString(attachment: attachment)
+            attributed.append(NSAttributedString(string: "\n"))
+            textStorage?.replaceCharacters(in: selectedRange(), with: attributed)
+            setSelectedRange(NSRange(location: selectedRange().location + attributed.length, length: 0))
+        }
+        didChangeText()
+        return true
+    }
+
+    private func scaled(_ image: NSImage, maxWidth: CGFloat) -> NSImage {
+        guard image.size.width > maxWidth else { return image }
+        let ratio = maxWidth / image.size.width
+        let size = NSSize(width: maxWidth, height: image.size.height * ratio)
+        let output = NSImage(size: size)
+        output.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: size))
+        output.unlockFocus()
+        return output
+    }
+}
 
 /// UI-09④：按设置页「正文字体」构造 NSFont，使字体设置贯穿正文输入框，
 /// 而不是只影响周边文本。霞鹜文楷 → 内嵌字体；系统衬线 → 系统字体 + serif 特征。
@@ -95,7 +138,7 @@ struct RichTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = WuyanTextView.scrollableTextView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
 
@@ -199,11 +242,7 @@ struct RichTextEditor: NSViewRepresentable {
                 from: NSRange(location: 0, length: attributed.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
             )
-            let rtf = try? attributed.data(
-                from: NSRange(location: 0, length: attributed.length),
-                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-            )
-            return rtfd ?? rtf
+            return rtfd
         }
     }
 }

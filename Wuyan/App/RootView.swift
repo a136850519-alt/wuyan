@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var showsOnboarding = !UserDefaults.standard.bool(forKey: "onboarding.completed")
+    @State private var showsOnboarding = !AppSettings.onboardingCompleted
 
     var body: some View {
         NavigationSplitView {
@@ -55,6 +55,18 @@ struct RootView: View {
             }
         } message: {
             Text(appState.errorMessage ?? "")
+        }
+        .confirmationDialog("删除这篇日记？", isPresented: Binding(
+            get: { appState.pendingDeleteEntryId != nil },
+            set: { if !$0 { appState.pendingDeleteEntryId = nil } }
+        ), titleVisibility: .visible) {
+            Button("移入回收站", role: .destructive) {
+                if let id = appState.pendingDeleteEntryId {
+                    appState.pendingDeleteEntryId = nil
+                    appState.softDelete(entryId: id)
+                }
+            }
+            Button("取消", role: .cancel) { appState.pendingDeleteEntryId = nil }
         }
     }
 }

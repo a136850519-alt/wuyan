@@ -41,10 +41,8 @@ struct AppCommands: Commands {
             .keyboardShortcut("s", modifiers: [.command, .shift])
 
             Button("删除当前条目") {
-                guard let id = appState.selectedEntryId else { return }
-                appState.softDelete(entryId: id)
+                appState.requestDeleteCurrentEntry()
             }
-            .keyboardShortcut(.delete, modifiers: .command)
             .disabled(appState.selectedEntryId == nil)
         }
     }

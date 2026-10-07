@@ -29,6 +29,9 @@ struct SettingsView: View {
     @State private var showsDisableCryptoConfirm = false
     @State private var showsConflictList = false
     @State private var pendingRestoreDirectory: URL?
+    @State private var pendingJSONImportURL: URL?
+    @State private var pendingEvictYear: Int?
+    @State private var isBackupTaskRunning = false
     @State private var webDAVPassword = ""
     @State private var s3SecretKey = ""
     @State private var zhipuAPIKey = ""
@@ -207,7 +210,7 @@ struct SettingsView: View {
                 }
                 .disabled(isTestingAI)
                 sectionStatus(for: StatusSection.ai)
-                Text("云端模式会在发送日记内容前提示发送范围。")
+                Text("云端模式会在发送日记内容前提示发送范围。自动采集位置与天气时，会把约 3km 精度的坐标发送给 Apple 地理编码和 Open-Meteo。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -215,6 +218,10 @@ struct SettingsView: View {
             Section("提醒与元数据") {
                 Toggle("每日提醒", isOn: $reminderEnabled)
                     .tint(Palette.cinnabar)
+                    .onChange(of: reminderEnabled) { enabled in
+                        guard !enabled else { return }
+                        Task { await ReminderScheduler().cancelAll() }
+                    }
                 ForEach(reminderTimes.indices, id: \.self) { index in
                     HStack {
                         DatePicker("提醒 \(index + 1)", selection: $reminderTimes[index], displayedComponents: .hourAndMinute)
@@ -268,15 +275,22 @@ struct SettingsView: View {
                 Button("创建完整备份（含媒体文件，可独立恢复）") {
                     exportFullBackup()
                 }
+                .disabled(isBackupTaskRunning)
                 Button("从完整备份还原…") {
                     pickFullBackupForRestore()
                 }
+                .disabled(isBackupTaskRunning)
                 Divider()
                 Button("导出 Markdown / JSON / PDF（阅读用）") {
                     exportAll()
                 }
+                .disabled(isBackupTaskRunning)
                 Button("从 JSON 备份还原（旧格式）") {
                     importJSONBackup()
+                }
+                .disabled(isBackupTaskRunning)
+                if isBackupTaskRunning {
+                    ProgressView("正在处理备份…")
                 }
                 sectionStatus(for: StatusSection.export)
             }
@@ -326,7 +340,7 @@ struct SettingsView: View {
                             Text(ByteCountFormatter.string(fromByteCount: mediaYearSizes[year] ?? 0, countStyle: .file))
                                 .foregroundStyle(.secondary)
                             Button("清理本地") {
-                                evictYearMedia(year: year)
+                                pendingEvictYear = year
                             }
                             .buttonStyle(.borderless)
                             .foregroundStyle(Palette.cinnabar)
@@ -387,6 +401,34 @@ struct SettingsView: View {
             }
         } message: {
             Text("还原前会自动快照当前数据库；备份包校验失败时原库不变。")
+        }
+        .confirmationDialog("导入旧格式 JSON？", isPresented: Binding(
+            get: { pendingJSONImportURL != nil },
+            set: { if !$0 { pendingJSONImportURL = nil } }
+        )) {
+            Button("导入并覆盖同 ID 条目", role: .destructive) {
+                runJSONImport()
+            }
+            Button("取消", role: .cancel) { pendingJSONImportURL = nil }
+        } message: {
+            Text("导入前会创建数据库快照；导入条目会标记为待同步，可能覆盖其它设备的版本。")
+        }
+        .confirmationDialog("清理本地媒体？", isPresented: Binding(
+            get: { pendingEvictYear != nil },
+            set: { if !$0 { pendingEvictYear = nil } }
+        )) {
+            Button("清理并保留远端副本", role: .destructive) {
+                if let year = pendingEvictYear {
+                    pendingEvictYear = nil
+                    evictYearMedia(year: year)
+                }
+            }
+            Button("取消", role: .cancel) { pendingEvictYear = nil }
+        } message: {
+            if let year = pendingEvictYear {
+                let bytes = mediaYearSizes[year] ?? 0
+                Text("将检查远端副本后清理 \(year) 年本地媒体，预计释放 \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))。远端不存在的文件会保留。")
+            }
         }
         .sheet(isPresented: $showsConflictList) {
             ConflictListView()
@@ -488,6 +530,14 @@ struct SettingsView: View {
                 setStatus(StatusSection.storage, "密码无法保存到钥匙串，配置未生效。")
                 return false
             }
+            if let url = URL(string: webDAVBaseURL), url.scheme?.lowercased() == "http",
+               let host = url.host?.lowercased(),
+               host != "localhost", host != "127.0.0.1", host != "::1",
+               !host.hasPrefix("192.168."), !host.hasPrefix("10."),
+               !(host.split(separator: ".").count == 4 && Int(host.split(separator: ".")[0]) == 172 && (16...31).contains(Int(host.split(separator: ".")[1]) ?? -1)) {
+                setStatus(StatusSection.storage, "WebDAV 使用明文 HTTP，已拒绝保存非局域网地址。请改用 HTTPS。")
+                return false
+            }
         }
 
         if showMessage {
@@ -502,30 +552,53 @@ struct SettingsView: View {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let directory = panel.url {
-            do {
-                let entries = try appState.entries.timeline(filter: .all)
-                let service = ExportService()
-                try service.exportMarkdown(entries: entries, mediaDAO: appState.db.mediaAssetDAO, to: directory.appendingPathComponent("Markdown", isDirectory: true))
-                try service.exportJSON(entries: entries, to: directory.appendingPathComponent("wuyan-backup.json"))
-                try service.exportPDF(entries: entries, to: directory.appendingPathComponent("wuyan-export.pdf"))
-                setStatus(StatusSection.export, "已导出 \(entries.count) 篇。")
-            } catch {
-                setStatus(StatusSection.export, error.localizedDescription)
+            isBackupTaskRunning = true
+            let database = appState.db
+            Task {
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result {
+                        let entries = try database.entryDAO.timeline(filter: .all)
+                        let service = ExportService()
+                        try service.exportMarkdown(entries: entries, mediaDAO: database.mediaAssetDAO, to: directory.appendingPathComponent("Markdown", isDirectory: true))
+                        try service.exportJSON(entries: entries, to: directory.appendingPathComponent("wuyan-entries.json"))
+                        try service.exportPDF(entries: entries, to: directory.appendingPathComponent("wuyan-export.pdf"))
+                        return entries.count
+                    }
+                }.value
+                isBackupTaskRunning = false
+                switch result {
+                case let .success(count): setStatus(StatusSection.export, "已导出 \(count) 篇。")
+                case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
+                }
             }
         }
     }
 
     private func importJSONBackup() {
+        guard !appState.isRescueMode else {
+            setStatus(StatusSection.export, "救援模式：还原已禁用。")
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                let count = try ExportService().importJSON(from: url, database: appState.db)
-                setStatus(StatusSection.export, "已还原 \(count) 篇。")
-            } catch {
-                setStatus(StatusSection.export, error.localizedDescription)
+        if panel.runModal() == .OK, let url = panel.url { pendingJSONImportURL = url }
+    }
+
+    private func runJSONImport() {
+        guard let url = pendingJSONImportURL else { return }
+        pendingJSONImportURL = nil
+        isBackupTaskRunning = true
+        let database = appState.db
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try ExportService().importJSON(from: url, database: database) }
+            }.value
+            isBackupTaskRunning = false
+            switch result {
+            case let .success(count): setStatus(StatusSection.export, "已还原 \(count) 篇。")
+            case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
             }
         }
     }
@@ -539,12 +612,22 @@ struct SettingsView: View {
         panel.canCreateDirectories = true
         panel.prompt = "选择备份位置"
         guard panel.runModal() == .OK, let directory = panel.url else { return }
-        do {
-            let target = directory.appendingPathComponent("晤言完整备份-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
-            let count = try ExportService().exportFullBackupPackage(database: appState.db, to: target)
-            setStatus(StatusSection.export, "完整备份已创建（\(count) 篇，含媒体文件）：\(target.lastPathComponent)")
-        } catch {
-            setStatus(StatusSection.export, error.localizedDescription)
+        let target = directory.appendingPathComponent("晤言完整备份-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+        isBackupTaskRunning = true
+        let database = appState.db
+        let archived = appState.archivedYears
+        if !archived.isEmpty {
+            setStatus(StatusSection.export, "提示：完整备份不包含已归档年份 \(archived.sorted().map(String.init).joined(separator: "、")) 的远端内容。")
+        }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try ExportService().exportFullBackupPackage(database: database, to: target) }
+            }.value
+            isBackupTaskRunning = false
+            switch result {
+            case let .success(count): setStatus(StatusSection.export, "完整备份已创建（\(count) 篇，含媒体文件）：\(target.lastPathComponent)")
+            case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
+            }
         }
     }
 
@@ -558,21 +641,27 @@ struct SettingsView: View {
     }
 
     private func runRestore(_ strategy: ImportConflictStrategy) {
+        guard !appState.isRescueMode else {
+            setStatus(StatusSection.export, "救援模式：还原已禁用。")
+            return
+        }
         guard let directory = pendingRestoreDirectory else { return }
         pendingRestoreDirectory = nil
-        do {
-            let report = try ExportService().importFullBackupPackage(
-                from: directory,
-                database: appState.db,
-                mediaStore: appState.mediaStore,
-                strategy: strategy
-            )
-            setStatus(
-                StatusSection.export,
-                "已导入 \(report.importedEntries) 篇（跳过已存在 \(report.skippedEntries) 篇），恢复媒体 \(report.restoredMediaFiles) 个，缺失本地副本 \(report.missingLocalCopies) 个（可从远端补）。还原前快照：\(report.snapshotURL.lastPathComponent)"
-            )
-        } catch {
-            setStatus(StatusSection.export, error.localizedDescription)
+        isBackupTaskRunning = true
+        let database = appState.db
+        let mediaStore = appState.mediaStore
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try ExportService().importFullBackupPackage(from: directory, database: database, mediaStore: mediaStore, strategy: strategy)
+                }
+            }.value
+            isBackupTaskRunning = false
+            switch result {
+            case let .success(report):
+                setStatus(StatusSection.export, "已导入 \(report.importedEntries) 篇（跳过已存在 \(report.skippedEntries) 篇），恢复媒体 \(report.restoredMediaFiles) 个，缺失本地副本 \(report.missingLocalCopies) 个（可从远端补）。还原前快照：\(report.snapshotURL.lastPathComponent)")
+            case let .failure(error): setStatus(StatusSection.export, error.localizedDescription)
+            }
         }
     }
 
@@ -691,6 +780,10 @@ struct SettingsView: View {
     }
 
     private func saveCryptoSettings() {
+        guard !appState.isRescueMode else {
+            setStatus(StatusSection.crypto, "救援模式：加密设置已禁用。")
+            return
+        }
         // UI-01（已确认）：护栏——开关提交生效、开启必须非空口令且两次一致、
         // 换口令走数据密钥重包装协议（旧口令验证失败或迁移失败时不覆盖旧口令）。
         let stored = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
@@ -737,6 +830,10 @@ struct SettingsView: View {
     }
 
     private func evictYearMedia(year: Int) {
+        guard !appState.isRescueMode else {
+            setStatus(StatusSection.media, "救援模式：清理媒体已禁用。")
+            return
+        }
         Task {
             do {
                 let count = try await appState.mediaStore.evictYearMedia(year: year)

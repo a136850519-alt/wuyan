@@ -80,7 +80,7 @@ final class EditorViewModel: ObservableObject {
         saveTask?.cancel()
         saveTask = nil
         guard let id else {
-            entry = nil
+            self.entry = nil
             loadedContentHash = nil
             externalUpdateDetected = false
             restartObservation(id: nil, appState: appState)
@@ -161,7 +161,7 @@ final class EditorViewModel: ObservableObject {
         // UI-02：归档进行中的年份锁定编辑，防止上传后本地删除丢掉新编辑
         if let archiving = appState.archivingYear,
            archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
-            appState.errorMessage = "正在归档 \(archiving) 年，该年份暂时锁定，归档完成后可继续编辑。"
+            externalUpdateDetected = true
             return
         }
         guard var entry else { return }
@@ -204,6 +204,13 @@ final class EditorViewModel: ObservableObject {
                 }
             }
             markExternalUpdateDetected()
+        } catch EntrySaveError.entryRemoved {
+            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            self.entry = nil
+            loadedContentHash = nil
+            isDirty = false
+            externalUpdateDetected = false
+            appState.selectedEntryId = nil
         } catch {
             appState.errorMessage = error.localizedDescription
         }
@@ -239,11 +246,15 @@ final class EditorViewModel: ObservableObject {
         // UI-02：归档进行中的年份锁定删除操作
         if let archiving = appState.archivingYear,
            archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
-            appState.errorMessage = "正在归档 \(archiving) 年，该年份暂时锁定。"
+            externalUpdateDetected = true
             return
         }
+        // Flush the final debounce window before moving the row to the trash.
+        flushIfNeeded(appState: appState)
+        guard !isDirty else { return }
         do {
             try appState.entries.softDelete(id: id)
+            appState.syncCoordinator.notifyEditCompleted()
             appState.selectedEntryId = nil
             entry = nil
         } catch {
@@ -335,6 +346,13 @@ final class EditorViewModel: ObservableObject {
             appState.syncCoordinator.notifyEditCompleted()
         } catch EntrySaveError.concurrentModification {
             markExternalUpdateDetected()
+        } catch EntrySaveError.entryRemoved {
+            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            self.entry = nil
+            loadedContentHash = nil
+            isDirty = false
+            externalUpdateDetected = false
+            appState.selectedEntryId = nil
         } catch {
             appState.errorMessage = error.localizedDescription
         }
@@ -353,7 +371,10 @@ final class EditorViewModel: ObservableObject {
     func keepCurrentEdits(appState: AppState) {
         guard let current = entry,
               var fresh = try? appState.entries.entry(id: current.id) else {
-            reloadFromDatabase(appState: appState)
+            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            entry = nil
+            loadedContentHash = nil
+            isDirty = false
             return
         }
         applyEditorFields(to: &fresh)
@@ -390,13 +411,14 @@ final class EditorViewModel: ObservableObject {
     /// Persist a draft when a conflict prevents the normal save. This runs for
     /// every flush entry point so switching views or terminating cannot discard
     /// the user's text.
-    private func preserveUnsavedEdits(appState: AppState) {
+    private func preserveUnsavedEdits(appState: AppState, detachMedia: Bool = false) {
         guard var draft = entry, isDirty else { return }
         applyEditorFields(to: &draft)
+        if detachMedia { draft.mediaIds = [] }
         draft.refreshForSave()
         do {
             let board = try appState.boards.board(id: draft.boardId)
-            let assets = mediaAssets
+            let assets = detachMedia ? [] : mediaAssets
             let envelope = try JSONEncoder.wuyan.encode(
                 EntryEnvelope(entry: draft, board: board, dayNote: nil, mediaAssets: assets)
             )
@@ -428,7 +450,7 @@ final class EditorViewModel: ObservableObject {
         guard let id else { return }
         observationTask = Task { [weak self] in
             for await updated in appState.entries.observeEntry(id: id) {
-                self?.handleObservedEntry(updated)
+                self?.handleObservedEntry(updated, appState: appState)
             }
         }
     }
@@ -436,8 +458,18 @@ final class EditorViewModel: ObservableObject {
     /// 外部改写当前条目（同步拉取/天气定位回写/其它设备）时的处理：
     /// - 无未保存修改：静默应用新版本，编辑器与数据库保持一致；
     /// - 有未保存修改：暂停自动保存并亮横幅，由用户选择保留编辑或重新载入。
-    private func handleObservedEntry(_ fetched: Entry?) {
-        guard let fetched, let current = entry, fetched.id == current.id else { return }
+    private func handleObservedEntry(_ fetched: Entry?, appState: AppState) {
+        guard let fetched else {
+            guard entry != nil else { return }
+            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            entry = nil
+            loadedContentHash = nil
+            isDirty = false
+            externalUpdateDetected = false
+            appState.selectedEntryId = nil
+            return
+        }
+        guard let current = entry, fetched.id == current.id else { return }
         // 自己刚保存的版本与已知版本不处理，避免自触发的回环。
         guard fetched.contentHash != loadedContentHash else { return }
         if !isDirty {

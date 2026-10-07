@@ -229,14 +229,20 @@ final class LocalMediaStore: MediaStoreProtocol {
 
     func importMedia(_ url: URL, entryId: UUID) async throws -> MediaAsset {
         WuyanLog.media.info("导入媒体：\(url.lastPathComponent) → 条目 \(entryId.uuidString.prefix(8))")
-        let data = try Data(contentsOf: url)
-        let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let sha = try Hashing.sha256Hex(ofFileAt: url)
+        let fileSize = (try fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
         let ext = url.pathExtension
         let bucket = mediaURL.appendingPathComponent(String(sha.prefix(2)), isDirectory: true)
         try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
         let local = bucket.appendingPathComponent(ext.isEmpty ? sha : "\(sha).\(ext)")
         if !fileManager.fileExists(atPath: local.path) {
-            try data.write(to: local, options: .atomic)
+            let temporary = bucket.appendingPathComponent(".import-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: temporary) }
+            try fileManager.copyItem(at: url, to: temporary)
+            guard try Hashing.sha256Hex(ofFileAt: temporary) == sha else {
+                throw RemoteStorageError.checksumMismatch(path: url.path, expected: sha, actual: try Hashing.sha256Hex(ofFileAt: temporary))
+            }
+            try fileManager.moveItem(at: temporary, to: local)
         }
 
         let thumbnailRelPath = try makeThumbnailIfPossible(for: local, sha: sha)
@@ -246,18 +252,27 @@ final class LocalMediaStore: MediaStoreProtocol {
             type: mediaType(for: url),
             filename: url.lastPathComponent,
             mime: mimeType(for: url),
-            size: Int64(data.count),
+            size: fileSize,
             sha256: sha,
             thumbnailPath: thumbnailRelPath,
             localPath: localRelPath,
             capturedAt: Date()
         )
-        try database.mediaAssetDAO.save(asset)
-        if var entry = try database.entryDAO.entry(id: entryId), !entry.mediaIds.contains(asset.id) {
-            entry.mediaIds.append(asset.id)
-            try database.entryDAO.save(entry)
+        // Attach the asset and append its ID in one database transaction. An
+        // editor/archive race that removes the entry therefore cannot leave an
+        // orphan asset or silently report a successful import.
+        try await database.writer.write { db in
+            guard var entry = try Entry.fetchOne(db, key: entryId.uuidString), !entry.deleted else {
+                throw EntrySaveError.entryRemoved(entryId)
+            }
+            try asset.save(db)
+            if !entry.mediaIds.contains(asset.id) {
+                entry.mediaIds.append(asset.id)
+                entry.refreshForSave()
+                try entry.update(db)
+            }
         }
-        WuyanLog.media.info("导入媒体完成：\(sha.prefix(8))，\(data.count) 字节")
+        WuyanLog.media.info("导入媒体完成：\(sha.prefix(8))，\(fileSize) 字节")
         return asset
     }
 
@@ -302,6 +317,28 @@ final class LocalMediaStore: MediaStoreProtocol {
         } else {
             try data.write(to: local, options: .atomic)
         }
+        return local
+    }
+
+    /// Materialize a backup/remote file without loading it into memory.
+    /// The source is hashed first, then copied through a temporary path so a
+    /// failed copy never leaves a seemingly complete content-addressed file.
+    func materializeMediaFile(from sourceURL: URL, for asset: MediaAsset) throws -> URL {
+        let sourceHash = try Hashing.sha256Hex(ofFileAt: sourceURL)
+        guard sourceHash == asset.sha256 else {
+            throw RemoteStorageError.checksumMismatch(path: sourceURL.path, expected: asset.sha256, actual: sourceHash)
+        }
+        let local = localMediaURL(for: asset)
+        let bucket = local.deletingLastPathComponent()
+        try fileManager.createDirectory(at: bucket, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: local.path), try Hashing.sha256Hex(ofFileAt: local) == asset.sha256 {
+            return local
+        }
+        let temporary = bucket.appendingPathComponent(".restore-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: temporary) }
+        try fileManager.copyItem(at: sourceURL, to: temporary)
+        if fileManager.fileExists(atPath: local.path) { try fileManager.removeItem(at: local) }
+        try fileManager.moveItem(at: temporary, to: local)
         return local
     }
 
@@ -401,20 +438,18 @@ final class LocalMediaStore: MediaStoreProtocol {
     /// 按年份统计本地媒体大小。key = 年份，value = 字节数
     func mediaSizeByYear() -> [Int: Int64] {
         var sizes: [Int: Int64] = [:]
-        let allAssets = (try? database.mediaAssetDAO.allAssets()) ?? []
-        let calendar = Calendar.current
-        for asset in allAssets {
-            guard let localPath = asset.localPath else { continue }
-            let absolutePath = Self.resolvePath(localPath)
-            guard fileManager.fileExists(atPath: absolutePath) else { continue }
-            let fileSize = (try? fileManager.attributesOfItem(atPath: absolutePath)[.size] as? Int) ?? 0
-            let year: Int
-            if let date = asset.capturedAt {
-                year = calendar.component(.year, from: date)
-            } else {
-                year = 0
+        guard let entries = try? database.entryDAO.timeline(filter: .all),
+              let assets = try? database.mediaAssetDAO.allAssets() else { return sizes }
+        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
+        for entry in entries {
+            let year = Int(entry.dayDate.prefix(4)) ?? 0
+            for mediaID in entry.mediaIds {
+                guard let asset = assetsByID[mediaID], let localPath = asset.localPath else { continue }
+                let absolutePath = Self.resolvePath(localPath)
+                guard fileManager.fileExists(atPath: absolutePath) else { continue }
+                let fileSize = (try? fileManager.attributesOfItem(atPath: absolutePath)[.size] as? Int) ?? 0
+                sizes[year, default: 0] += Int64(fileSize)
             }
-            sizes[year, default: 0] += Int64(fileSize)
         }
         return sizes
     }
@@ -428,40 +463,36 @@ final class LocalMediaStore: MediaStoreProtocol {
         let yearEntries = try database.entryDAO.timeline(filter: .year(year))
         let allMediaIds = yearEntries.flatMap(\.mediaIds)
         let allAssets = try database.mediaAssetDAO.allAssets(for: allMediaIds)
-        // D08：上传缓存按后端身份隔离——拿当前后端的缓存判断，绝不能拿其它后端
-        // 的「已上传」记录批准本次删除。
-        let uploadedPaths = try database.mediaAssetDAO.uploadedPaths(backend: ProviderFactory.backendFingerprint())
+        // A local upload cache is only a hint. A NAS can be replaced or
+        // cleaned independently, so every deletion must re-check the remote.
+        guard let provider = try? ProviderFactory.makeRemoteStorageProvider() else {
+            WuyanLog.media.warning("跳过媒体驱逐：无法连接远端存储")
+            return 0
+        }
 
         var removed = 0
-        var fallbackProvider: (any RemoteStorageProvider)?
-        var attemptedProviderCreation = false
         for asset in allAssets {
             guard !asset.sha256.isEmpty else { continue }
             guard let localPath = asset.localPath else { continue }
             let absolutePath = Self.resolvePath(localPath)
             guard fileManager.fileExists(atPath: absolutePath) else { continue }
 
+            // Content-addressed files can be referenced by entries in multiple
+            // years. Keep the shared local object until all references are gone.
+            guard (try database.mediaAssetDAO.referenceCount(sha256: asset.sha256)) <= 1 else {
+                continue
+            }
+
             // 安全检查：确认远端已备份
             let plainPath = SyncPaths.mediaPath(sha256: asset.sha256, filename: asset.filename)
             let encPath = SyncPaths.encryptedMediaPath(sha256: asset.sha256, filename: asset.filename)
-            let isUploaded = uploadedPaths.contains(plainPath) || uploadedPaths.contains(encPath)
-
-            if !isUploaded {
-                // 未在 sync_uploaded 表中，查询远端是否确实存在
-                if !attemptedProviderCreation {
-                    attemptedProviderCreation = true
-                    fallbackProvider = try? ProviderFactory.makeRemoteStorageProvider()
-                }
-                guard let fallbackProvider else {
-                    WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：无法连接远端存储")
-                    continue
-                }
-                let plainExists = (try? await fallbackProvider.contentLength(plainPath)) != nil
-                let encExists = plainExists ? true : ((try? await fallbackProvider.contentLength(encPath)) != nil)
-                guard plainExists || encExists else {
-                    WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：远端不存在，删除将导致数据丢失")
-                    continue
-                }
+            let plainLength: Int64? = try? await provider.contentLength(plainPath)
+            let plainExists = plainLength == asset.size
+            let encryptedLength: Int64? = try? await provider.contentLength(encPath)
+            let encExists = encryptedLength != nil
+            guard plainExists || encExists else {
+                WuyanLog.media.warning("跳过驱逐 \(asset.sha256.prefix(8))：远端不存在，删除将导致数据丢失")
+                continue
             }
 
             try removeLocalFiles(for: asset)

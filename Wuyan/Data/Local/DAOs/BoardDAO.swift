@@ -89,12 +89,10 @@ public struct BoardDAO: BoardRepository {
             // 否则同步把 board 拉回后表非空，但某 kind 缺失时也不会被补上；
             // 而 kind 存在时即使 id 不同也不会重复插入（靠 stableID 保持身份一致）。
             for board in Board.builtIn {
-                if var existing = try Board.fetchOne(db, key: board.id.uuidString), existing.deletedAt != nil {
-                    existing.deletedAt = nil
-                    existing.updatedAt = Date()
-                    try existing.update(db)
-                    continue
-                }
+                // A deleted built-in is a real tombstone. Recreating it on
+                // every launch would undo the user's deletion and later
+                // reintroduce the board on other devices.
+                if try Board.fetchOne(db, key: board.id.uuidString) != nil { continue }
                 let exists = try Board
                     .filter(Board.Columns.kind == board.kind.rawValue)
                     .filter(Board.Columns.deletedAt == nil)

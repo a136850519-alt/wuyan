@@ -43,7 +43,17 @@ final class TimelineViewModel: ObservableObject {
                 self.summaries = newSummaries
                 if let selected = appState.selectedEntryId,
                    !newSummaries.contains(where: { $0.id == selected }) {
-                    appState.selectedEntryId = newSummaries.first?.id
+                    // A live entry may leave the current filter after saving
+                    // (for example, a draft becomes non-draft). Keep it
+                    // selected so subsequent keystrokes cannot land in the
+                    // first remaining row. Move selection only when the row
+                    // was actually removed or soft-deleted.
+                    if let current = try? appState.entries.entry(id: selected),
+                       current.deleted == false {
+                        // Keep the current selection outside the filtered list.
+                    } else {
+                        appState.selectedEntryId = newSummaries.first?.id
+                    }
                 } else if appState.selectedEntryId == nil {
                     appState.selectedEntryId = newSummaries.first?.id
                 }

@@ -181,9 +181,8 @@ final class ExportService {
             guard fm.fileExists(atPath: absolutePath) else {
                 throw BackupError.missingMediaFile(absolutePath)
             }
-            let data = try Data(contentsOf: URL(fileURLWithPath: absolutePath))
-            let digest = SHA256.hash(data: data)
-            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            let sourceURL = URL(fileURLWithPath: absolutePath)
+            let hex = try Hashing.sha256Hex(ofFileAt: sourceURL)
             // 导出校验：文件实际内容必须与元数据 sha256 一致，否则不产出不可信的备份
             guard hex == asset.sha256 else {
                 throw BackupError.exportChecksumMismatch(absolutePath)
@@ -206,8 +205,10 @@ final class ExportService {
                 name = "\(asset.sha256)-\(asset.id.uuidString)-\(safeFilename)"
                 _ = usedNames.insert(name)
             }
-            try data.write(to: mediaDirectory.appendingPathComponent(name), options: .atomic)
-            let packaged = FullBackupManifest.MediaFile(filename: name, sha256: hex, size: Int64(data.count))
+            let destination = mediaDirectory.appendingPathComponent(name)
+            try fm.copyItem(at: sourceURL, to: destination)
+            let fileSize = (try fm.attributesOfItem(atPath: sourceURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let packaged = FullBackupManifest.MediaFile(filename: name, sha256: hex, size: fileSize)
             packagedBySHA[hex] = packaged
             mediaFiles.append(packaged)
         }
@@ -266,26 +267,22 @@ final class ExportService {
 
         // 1) 校验：清单中的每个媒体文件都必须存在且哈希一致
         let mediaDirectory = directory.appendingPathComponent("media", isDirectory: true)
-        var validatedMediaData: [String: Data] = [:]
         for file in manifest.mediaFiles {
-            guard validatedMediaData[file.filename] == nil,
-                  let url = Self.safeMediaURL(file.filename, in: mediaDirectory)
+            guard let url = Self.safeMediaURL(file.filename, in: mediaDirectory)
             else {
                 throw BackupError.corruptPackage("媒体文件名无效或重复：\(file.filename)")
             }
             guard fm.fileExists(atPath: url.path) else {
                 throw BackupError.missingMediaFile(file.filename)
             }
-            let data = try Data(contentsOf: url)
-            guard Int64(data.count) == file.size else {
+            let size = (try fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? -1
+            guard size == file.size else {
                 throw BackupError.mediaChecksumMismatch(file.filename)
             }
-            let digest = SHA256.hash(data: data)
-            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            let hex = try Hashing.sha256Hex(ofFileAt: url)
             guard hex == file.sha256 else {
                 throw BackupError.mediaChecksumMismatch(file.filename)
             }
-            validatedMediaData[file.filename] = data
         }
 
         let manifestAssets = Dictionary(grouping: manifest.database.mediaAssets, by: \.id)
@@ -314,7 +311,7 @@ final class ExportService {
                 let asset = restoredAssets[index]
                 guard asset.localPath != nil else { continue }
                 guard let file = manifest.mediaFiles.first(where: { $0.sha256 == asset.sha256 }),
-                      let data = validatedMediaData[file.filename]
+                      let sourceURL = Self.safeMediaURL(file.filename, in: mediaDirectory)
                 else {
                     throw BackupError.missingMediaFile(asset.filename)
                 }
@@ -326,7 +323,7 @@ final class ExportService {
                         throw BackupError.corruptPackage("本地媒体文件已存在但校验不一致：\(targetURL.path)")
                     }
                 }
-                let materialized = try mediaStore.materializeRemoteMedia(data, for: asset)
+                let materialized = try mediaStore.materializeMediaFile(from: sourceURL, for: asset)
                 if !existed {
                     createdMediaURLs.append(materialized)
                     restoredMedia += 1
@@ -466,6 +463,9 @@ final class ExportService {
 
     func importJSON(from url: URL, database: AppDatabase) throws -> Int {
         let data = try Data(contentsOf: url)
+        // Legacy JSON imports can overwrite IDs and are therefore reversible
+        // only when they take the same pre-restore snapshot as full restores.
+        _ = try Self.snapshotDatabase(database: database)
         // 先尝试完整备份格式，失败回退旧格式（纯 entries 数组）
         if let doc = try? JSONDecoder.wuyan.decode(BackupDocument.self, from: data) {
             return try importBackupDocument(doc, database: database)

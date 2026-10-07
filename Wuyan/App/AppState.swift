@@ -51,6 +51,7 @@ final class AppState: ObservableObject {
     @Published var archivedYears: [Int] = []
     /// UI-02（已确认）：归档进行中的年份——该年份内容锁定编辑，防止归档后本地删除丢掉新编辑。
     @Published var archivingYear: Int?
+    @Published var pendingDeleteEntryId: UUID?
     /// UI-07：数据库打开失败的只读救援模式。禁止编辑与同步，提供救援副本导出。
     let isRescueMode: Bool
 
@@ -224,6 +225,10 @@ final class AppState: ObservableObject {
             errorMessage = "救援模式：归档已禁用。"
             return
         }
+        guard year != Self.year(fromDayKey: DayKey.today) else {
+            errorMessage = "当前年份不能归档。"
+            return
+        }
         // UI-02：归档期间该年份锁定；同时只允许一个归档任务
         if let running = archivingYear {
             errorMessage = "已有 \(running) 年归档任务进行中，请等待完成。"
@@ -238,6 +243,10 @@ final class AppState: ObservableObject {
     func downloadYearFromRemote(_ year: Int) {
         guard !isRescueMode else {
             errorMessage = "救援模式：下载已禁用。"
+            return
+        }
+        guard archivedYears.contains(year) else {
+            errorMessage = "只有已归档年份可以下载回本地。"
             return
         }
         syncCoordinator.downloadYearFromRemote(year)
@@ -314,6 +323,11 @@ final class AppState: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func requestDeleteCurrentEntry() {
+        guard selectedEntryId != nil else { return }
+        pendingDeleteEntryId = selectedEntryId
     }
 
     func deleteBoard(boardId: UUID) {

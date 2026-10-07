@@ -51,11 +51,7 @@ struct SidebarView: View {
                         } label: {
                             Label("归档到 NAS（删除本地）", systemImage: "archivebox")
                         }
-                        Button {
-                            appState.downloadYearFromRemote(year)
-                        } label: {
-                            Label("下载本年内容", systemImage: "arrow.down.circle")
-                        }
+                        .disabled(year == AppState.year(fromDayKey: DayKey.today))
                     }
 
                     if expandedYears.contains(year) {
@@ -70,6 +66,7 @@ struct SidebarView: View {
                                     Button("删除板块") {
                                         delete(board)
                                     }
+                                    .disabled(Board.builtIn.contains { $0.id == board.id })
                                 }
                         }
                     }
@@ -149,6 +146,12 @@ struct SidebarView: View {
         .task {
             reloadBoards()
             reloadEntries()
+        }
+        .task {
+            for await summaries in appState.entries.observeTimelineSummaries(filter: .all) {
+                entries = summaries
+                streakCount = StreakTracker(summaries: summaries).currentStreak()
+            }
         }
         .sheet(isPresented: $isAddingBoard, onDismiss: reloadBoards) {
             BoardEditorSheet(board: nil)
