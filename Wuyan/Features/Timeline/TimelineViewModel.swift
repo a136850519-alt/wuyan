@@ -39,6 +39,10 @@ final class TimelineViewModel: ObservableObject {
         }
 
         observationTask = Task {
+            // The first emission follows an explicit filter change and should
+            // establish a selection in the new result set. Later emissions
+            // are database updates and must preserve the user's current row.
+            var isFirstEmission = true
             for await newSummaries in appState.entries.observeTimelineSummaries(filter: filter) {
                 self.summaries = newSummaries
                 if let selected = appState.selectedEntryId,
@@ -48,7 +52,9 @@ final class TimelineViewModel: ObservableObject {
                     // selected so subsequent keystrokes cannot land in the
                     // first remaining row. Move selection only when the row
                     // was actually removed or soft-deleted.
-                    if let current = try? appState.entries.entry(id: selected),
+                    if isFirstEmission {
+                        appState.selectedEntryId = newSummaries.first?.id
+                    } else if let current = try? appState.entries.entry(id: selected),
                        current.deleted == false {
                         // Keep the current selection outside the filtered list.
                     } else {
@@ -57,6 +63,7 @@ final class TimelineViewModel: ObservableObject {
                 } else if appState.selectedEntryId == nil {
                     appState.selectedEntryId = newSummaries.first?.id
                 }
+                isFirstEmission = false
             }
         }
     }
