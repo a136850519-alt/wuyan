@@ -205,7 +205,7 @@ final class EditorViewModel: ObservableObject {
             }
             markExternalUpdateDetected()
         } catch EntrySaveError.entryRemoved {
-            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            preserveRemovedEntryAsNewEntry(appState: appState)
             self.entry = nil
             loadedContentHash = nil
             isDirty = false
@@ -347,7 +347,7 @@ final class EditorViewModel: ObservableObject {
         } catch EntrySaveError.concurrentModification {
             markExternalUpdateDetected()
         } catch EntrySaveError.entryRemoved {
-            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            preserveRemovedEntryAsNewEntry(appState: appState)
             self.entry = nil
             loadedContentHash = nil
             isDirty = false
@@ -371,7 +371,7 @@ final class EditorViewModel: ObservableObject {
     func keepCurrentEdits(appState: AppState) {
         guard let current = entry,
               var fresh = try? appState.entries.entry(id: current.id) else {
-            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            preserveRemovedEntryAsNewEntry(appState: appState)
             entry = nil
             loadedContentHash = nil
             isDirty = false
@@ -443,6 +443,29 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
+    /// A removed entry can no longer safely be restored under its original ID:
+    /// doing so would resurrect the remote tombstone and lose its attachments.
+    /// Keep the user's text as an independent diary entry instead.
+    private func preserveRemovedEntryAsNewEntry(appState: AppState) {
+        guard var draft = entry, isDirty else { return }
+        applyEditorFields(to: &draft)
+        let originalTitle = draft.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        draft.id = UUID()
+        draft.title = "【未保存的编辑】" + (originalTitle.isEmpty ? "" : originalTitle)
+        draft.mediaIds = []
+        draft.refreshForSave()
+        do {
+            let board = try appState.boards.board(id: draft.boardId)
+            try appState.entries.saveResolvedConflict(
+                entry: draft, board: board, dayNote: nil, mediaAssets: []
+            )
+            let label = draft.title ?? "未保存的编辑"
+            appState.errorMessage = "原条目已被移除，未保存的内容已另存为新日记「\(label)」。"
+        } catch {
+            appState.errorMessage = "未保存的编辑无法另存：\(error.localizedDescription)"
+        }
+    }
+
     /// 切换观察目标。观察流在数据库事务提交时逐条回报，循环体在主 actor 上执行。
     private func restartObservation(id: UUID?, appState: AppState) {
         observationTask?.cancel()
@@ -461,7 +484,7 @@ final class EditorViewModel: ObservableObject {
     private func handleObservedEntry(_ fetched: Entry?, appState: AppState) {
         guard let fetched else {
             guard entry != nil else { return }
-            preserveUnsavedEdits(appState: appState, detachMedia: true)
+            preserveRemovedEntryAsNewEntry(appState: appState)
             entry = nil
             loadedContentHash = nil
             isDirty = false

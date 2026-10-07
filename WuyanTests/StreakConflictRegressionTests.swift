@@ -204,5 +204,23 @@ struct EditorExternalUpdateRegressionTests {
         let final = try #require(try fixture.db.entryDAO.entry(id: fixture.entryId))
         #expect(final.body == "后台同步来的第二版")
     }
+
+    @Test("条目被移除后未保存输入另存为独立新日记")
+    func removedEntryEditsBecomeNewEntry() async throws {
+        let fixture = try makeFixture(body: "原始正文")
+        let viewModel = EditorViewModel()
+        viewModel.load(id: fixture.entryId, appState: fixture.appState)
+        viewModel.body = "移除期间的本地输入"
+        try fixture.db.entryDAO.softDelete(id: fixture.entryId)
+
+        let saved = await waitUntil {
+            let entries = (try? fixture.db.entryDAO.timeline(filter: .all)) ?? []
+            return entries.contains { $0.id != fixture.entryId && $0.body == "移除期间的本地输入" }
+        }
+        #expect(saved)
+        #expect(try fixture.db.entryDAO.entry(id: fixture.entryId)?.deleted == true)
+        let copies = try fixture.db.entryDAO.timeline(filter: .all).filter { $0.id != fixture.entryId }
+        #expect(copies.contains { $0.title?.hasPrefix("【未保存的编辑】") == true })
+    }
 }
 }
