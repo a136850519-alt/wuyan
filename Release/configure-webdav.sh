@@ -100,7 +100,7 @@ fi
 security add-generic-password "${KEYCHAIN_ARGS[@]}" -w "$WEB_DAV_PASSWORD"
 
 if [[ "$MARK_ONBOARDING_DONE" == "true" ]]; then
-  defaults write "$APP_BUNDLE_ID" "onboarding.completed" -bool true
+  defaults write "$APP_BUNDLE_ID" "settings.onboarding.completed" -bool true
 fi
 
 echo "已写入晤言 WebDAV 配置："

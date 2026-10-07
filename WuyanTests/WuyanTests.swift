@@ -418,6 +418,16 @@ struct AppSettingsTests {
             #expect(AppSettings.metadataEnabled == true)
         }
     }
+
+    @Test("旧版 onboarding key 在读取时迁移")
+    func legacyOnboardingKeyMigrates() {
+        TestIsolation.withIsolatedDefaults { defaults in
+            defaults.set(true, forKey: "onboarding.completed")
+            #expect(AppSettings.onboardingCompleted)
+            #expect(defaults.bool(forKey: SettingKey.onboardingCompleted))
+            #expect(defaults.object(forKey: "onboarding.completed") == nil)
+        }
+    }
 }
 
 // MARK: - Hashing Tests

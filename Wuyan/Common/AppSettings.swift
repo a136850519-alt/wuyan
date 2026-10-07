@@ -54,6 +54,7 @@ enum AppSettings {
     private static var defaults: UserDefaults = .standard
     /// R2-6/V3-16：兼容 1.1.3 及更早版本写入的归档年份 key。
     private static var legacyArchivedYearsKey: String { "archive.years" }
+    private static var legacyOnboardingCompletedKey: String { "onboarding.completed" }
 
     /// 仅测试目标可调用：注入隔离的 UserDefaults。
     /// 生产代码绝不能调用（调用后设置将不再持久化到用户偏好）。
@@ -175,7 +176,15 @@ enum AppSettings {
     }
 
     static var onboardingCompleted: Bool {
-        defaults.bool(forKey: SettingKey.onboardingCompleted)
+        if defaults.bool(forKey: SettingKey.onboardingCompleted) {
+            return true
+        }
+        guard defaults.bool(forKey: legacyOnboardingCompletedKey) else { return false }
+        // V4.1-01: migrate the pre-1.1.5 key on first read so scripts and
+        // older installations do not cause onboarding to reappear.
+        defaults.set(true, forKey: SettingKey.onboardingCompleted)
+        defaults.removeObject(forKey: legacyOnboardingCompletedKey)
+        return true
     }
 
     static func setOnboardingCompleted(_ completed: Bool) {
