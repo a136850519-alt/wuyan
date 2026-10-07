@@ -149,12 +149,13 @@ final class AIService: PoeticGenerator {
 
     func suggestTitle(_ entry: Entry) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
-        let safeEntries = filterCloudAllowed([entry])
+        let boundedEntry = Self.entryWithBoundedBody(entry)
+        let safeEntries = filterCloudAllowed([boundedEntry])
         guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
         do {
             return try await provider.complete([
                 AIMessage(role: .system, content: "为这篇日记起一个克制的中文短标题，只输出标题。"),
-                AIMessage(role: .user, content: entry.body)
+                AIMessage(role: .user, content: boundedEntry.body)
             ], options: AIOptions(temperature: 0.5, maxTokens: 40))
         } catch {
             WuyanLog.ai.error("标题建议请求失败：\(error.localizedDescription)")
@@ -164,12 +165,13 @@ final class AIService: PoeticGenerator {
 
     func suggestTags(_ entry: Entry) async throws -> [String] {
         guard isEnabled, let provider else { throw AIError.disabled }
-        let safeEntries = filterCloudAllowed([entry])
+        let boundedEntry = Self.entryWithBoundedBody(entry)
+        let safeEntries = filterCloudAllowed([boundedEntry])
         guard !safeEntries.isEmpty else { throw AIError.blockedBySensitiveBoard }
         do {
             let result = try await provider.complete([
                 AIMessage(role: .system, content: "从日记中提取 3 到 6 个中文标签，用逗号分隔，只输出标签。"),
-                AIMessage(role: .user, content: entry.body)
+                AIMessage(role: .user, content: boundedEntry.body)
             ], options: AIOptions(temperature: 0.3, maxTokens: 80))
             return result.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         } catch {
@@ -225,6 +227,13 @@ final class AIService: PoeticGenerator {
             maxCharactersPerEntry: cloudContextMaxCharactersPerEntry,
             maxCharacters: cloudContextMaxCharacters
         )
+    }
+
+    private static func entryWithBoundedBody(_ entry: Entry) -> Entry {
+        var bounded = entry
+        bounded.body = String(entry.body.prefix(cloudContextMaxCharactersPerEntry))
+        bounded.bodyRTF = nil
+        return bounded
     }
 
     private static func boundedEntries(

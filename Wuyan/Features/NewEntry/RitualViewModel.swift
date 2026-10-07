@@ -66,19 +66,22 @@ final class RitualViewModel: ObservableObject {
             appState.errorMessage = "救援模式：新建内容已禁用。"
             return
         }
-        if rawSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let note = DayNote(rawSummary: "", poeticLine: "今日留白，也算一笔。", generatedBy: nil)
-            do {
-                try appState.dayNotes.upsert(note)
-                appState.syncCoordinator.notifyEditCompleted()
-                dayNote = note
-                step = .board
-                revealBoards()
-            } catch {
-                appState.errorMessage = error.localizedDescription
-            }
-        } else {
-            await generate(appState: appState)
+        // “跳过” is an explicit opt-out from polishing. Persist the user's
+        // words verbatim and never call the configured (possibly cloud) AI.
+        let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = DayNote(
+            rawSummary: summary,
+            poeticLine: summary.isEmpty ? "今日留白，也算一笔。" : summary,
+            generatedBy: nil
+        )
+        do {
+            try appState.dayNotes.upsert(note)
+            appState.syncCoordinator.notifyEditCompleted()
+            dayNote = note
+            step = .board
+            revealBoards()
+        } catch {
+            appState.errorMessage = error.localizedDescription
         }
     }
 

@@ -43,6 +43,7 @@ enum SettingKey {
     // MARK: - 归档与同步
     // R2-6: 从 AppState/SyncCoordinator 硬编码提取到此
     static let archivedYears = "settings.archive.years"
+    static let onboardingCompleted = "settings.onboarding.completed"
 }
 
 /// 类型化访问器：读 UserDefaults 时提供默认值，避免散落各处。
@@ -171,5 +172,13 @@ enum AppSettings {
     static func setArchivedYears(_ years: [Int]) {
         defaults.set(years, forKey: SettingKey.archivedYears)
         defaults.removeObject(forKey: legacyArchivedYearsKey)
+    }
+
+    static var onboardingCompleted: Bool {
+        defaults.bool(forKey: SettingKey.onboardingCompleted)
+    }
+
+    static func setOnboardingCompleted(_ completed: Bool) {
+        defaults.set(completed, forKey: SettingKey.onboardingCompleted)
     }
 }

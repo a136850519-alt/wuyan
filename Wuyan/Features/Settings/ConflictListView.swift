@@ -27,7 +27,9 @@ struct ConflictListView: View {
                 ForEach(copies) { item in
                     Button {
                         selected = item
-                        currentEntry = try? appState.entries.entry(id: item.id)
+                        currentEntry = ((try? appState.db.entryDAO.conflictCopies()) ?? [])
+                            .first { $0.id == item.id }
+                            .flatMap { try? appState.entries.entry(id: $0.entryId) }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(item.dayDate) · \(item.title?.isEmpty == false ? item.title! : String(item.body.prefix(24)))")
@@ -85,7 +87,7 @@ struct ConflictListView: View {
     private func reload() {
         copies = ((try? appState.db.entryDAO.conflictCopies()) ?? []).map { copy in
             ConflictCopyItem(
-                id: copy.entryId,
+                id: copy.id,
                 dayDate: copy.envelope.entry.dayDate,
                 title: copy.envelope.entry.title,
                 body: copy.envelope.entry.body,
@@ -112,7 +114,7 @@ struct ConflictListView: View {
     private func resolve(_ resolution: Resolution) {
         guard let item = selected else { return }
         do {
-            let copy = (try appState.db.entryDAO.conflictCopies()).first { $0.entryId == item.id }
+            let copy = (try appState.db.entryDAO.conflictCopies()).first { $0.id == item.id }
             if let envelope = copy?.envelope {
                 switch resolution {
                 case .keepLocal:
@@ -139,7 +141,7 @@ struct ConflictListView: View {
                     break
                 }
             }
-            try appState.db.entryDAO.dropConflictCopy(id: item.id)
+            try appState.db.entryDAO.dropConflictCopy(copyID: item.id)
             appState.syncCoordinator.notifyEditCompleted()
             reload()
         } catch {

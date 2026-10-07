@@ -34,7 +34,7 @@ struct ClaudeProvider: AIProvider {
 
     func stream(_ messages: [AIMessage], options: AIOptions) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
                     let system = messages.first(where: { $0.role == .system })?.content
@@ -65,9 +65,11 @@ struct ClaudeProvider: AIProvider {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if Task.isCancelled { continuation.finish() }
+                    else { continuation.finish(throwing: error) }
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

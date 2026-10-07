@@ -64,6 +64,10 @@ struct OnboardingView: View {
             Text("本地优先写作，数据可同步到你自己的 NAS。")
                 .font(.body)
                 .foregroundStyle(.secondary)
+            Text("自动采集位置与天气默认开启时，会把约 3 公里精度的位置发送给 Apple 地理编码和 Open-Meteo。你可以随时在设置中关闭。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
             Spacer()
         }
         .padding(44)
@@ -186,7 +190,7 @@ struct OnboardingView: View {
     }
 
     private func finish() {
-        UserDefaults.standard.set(true, forKey: "onboarding.completed")
+        AppSettings.setOnboardingCompleted(true)
         isPresented = false
     }
 }

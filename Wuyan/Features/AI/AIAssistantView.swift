@@ -8,6 +8,7 @@ struct AIAssistantView: View {
     @State private var question = ""
     @State private var sourceEntryIds: [UUID] = []
     @State private var retrievalNote: String?
+    @State private var requestTask: Task<Void, Never>?
 
     /// R2-2: 共享门控实例
     @StateObject private var consentGate = CloudAIConsentGateModel()
@@ -58,6 +59,7 @@ struct AIAssistantView: View {
         }
         // R2-2: 使用共享云端 AI 授权门控，替代本视图内重复的 showsCloudConfirm + pendingAction
         .cloudAIConsentAlert(gate: consentGate)
+        .onDisappear { requestTask?.cancel() }
     }
 
     private func runPrompt() {
@@ -91,8 +93,9 @@ struct AIAssistantView: View {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         run {
-            // 问答的候选范围是全部未删除条目；RAG 再按语义选取片段。
-            let entries = (try? appState.entries.timeline(filter: .all)) ?? []
+            // RAG and the degraded cloud path only need recent context. Avoid
+            // loading every bodyRTF blob on the main actor for each question.
+            let entries = (try? appState.entries.recentEntries(limit: AIService.cloudContextMaxEntries)) ?? []
             let answer = try await appState.aiService.ask(trimmed, entries: entries)
             await MainActor.run {
                 sourceEntryIds = answer.sourceEntryIds
@@ -128,7 +131,7 @@ struct AIAssistantView: View {
         isRunning = true
         sourceEntryIds = []
         retrievalNote = nil
-        Task {
+        requestTask = Task {
             do {
                 let result = try await work()
                 await MainActor.run {
@@ -149,7 +152,7 @@ struct AIAssistantView: View {
         output = ""
         sourceEntryIds = []
         retrievalNote = nil
-        Task {
+        requestTask = Task {
             do {
                 let stream = try await work()
                 for try await chunk in stream {

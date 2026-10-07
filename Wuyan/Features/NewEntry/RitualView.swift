@@ -78,7 +78,9 @@ struct RitualView: View {
 
                 if viewModel.showsPoeticLine {
                     Button("换一句") {
-                        Task { await viewModel.generate(appState: appState) }
+                        consentGate.gate(appState: appState) {
+                            Task { await viewModel.generate(appState: appState) }
+                        }
                     }
                     .buttonStyle(WuyanSecondaryButtonStyle())
                     Button("下一步") {

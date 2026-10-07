@@ -48,7 +48,7 @@ struct OllamaProvider: AIProvider {
 
     func stream(_ messages: [AIMessage], options: AIOptions) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     let requestBody = OllamaChatRequest(model: model, messages: messages.map { .init(role: $0.role.rawValue, content: $0.content) }, stream: true, options: .init(temperature: options.temperature, num_predict: options.maxTokens))
                     var request = URLRequest(url: endpoint.appendingPathComponent("/api/chat"))
@@ -72,9 +72,11 @@ struct OllamaProvider: AIProvider {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if Task.isCancelled { continuation.finish() }
+                    else { continuation.finish(throwing: error) }
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
