@@ -56,7 +56,7 @@ struct SidebarView: View {
 
                     if expandedYears.contains(year) {
                         ForEach(boards) { board in
-                            BoardRow(board: board)
+                            BoardRow(board: board, year: year) { editingBoard = board }
                                 .padding(.leading, 18)
                                 .tag(SidebarSelection.yearBoard(year, board.id))
                                 .contextMenu {
@@ -133,6 +133,10 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .foregroundStyle(Palette.ink)
+        .tint(Palette.cinnabar)
+        .scrollContentBackground(.hidden)
+        .background(Palette.sidebarPaper)
         .navigationTitle("晤言")
         .toolbar {
             ToolbarItem {
@@ -231,15 +235,18 @@ struct SidebarView: View {
 
 private struct BoardRow: View {
     var board: Board
+    var year: Int
+    var editBirthday: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(Color(hex: board.colorHex))
                 .frame(width: 8, height: 8)
-            Label(board.name, systemImage: board.iconName)
-                .labelStyle(.titleAndIcon)
-            if let age = board.ageText() {
+            Text(board.name)
+                .font(.system(size: 12))
+                .lineLimit(2)
+            if let age = board.ageText(in: year) {
                 Text(age)
                     .font(.caption2)
                     .padding(.horizontal, 6)
@@ -247,12 +254,15 @@ private struct BoardRow: View {
                     .background(Palette.babyPink)
                     .foregroundStyle(Palette.babyPinkText)
                     .clipShape(Capsule())
+            } else if board.kind == .growth {
+                Button("设置生日", action: editBirthday)
+                    .font(.caption2).buttonStyle(.borderless)
             }
         }
     }
 }
 
-private struct BoardEditorSheet: View {
+struct BoardEditorSheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 

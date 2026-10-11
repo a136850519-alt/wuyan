@@ -44,6 +44,8 @@ enum SettingKey {
     // R2-6: 从 AppState/SyncCoordinator 硬编码提取到此
     static let archivedYears = "settings.archive.years"
     static let onboardingCompleted = "settings.onboarding.completed"
+    static let diaryIdleTimeoutMinutes = "settings.diaryLock.idleTimeoutMinutes"
+    static let diaryPasswordEnabled = "settings.diaryLock.enabled"
 }
 
 /// 类型化访问器：读 UserDefaults 时提供默认值，避免散落各处。
@@ -149,6 +151,32 @@ enum AppSettings {
     }
     static var metadataEnabled: Bool {
         defaults.object(forKey: SettingKey.metadataEnabled) as? Bool ?? true
+    }
+
+    // MARK: - 本机日记锁
+    static var diaryIdleTimeoutMinutes: Int {
+        let value = defaults.integer(forKey: SettingKey.diaryIdleTimeoutMinutes)
+        return value == 0 && defaults.object(forKey: SettingKey.diaryIdleTimeoutMinutes) == nil ? 5 : value
+    }
+
+    static var diaryIdleTimeoutSeconds: TimeInterval {
+        diaryIdleTimeoutMinutes > 0 ? TimeInterval(diaryIdleTimeoutMinutes * 60) : 0
+    }
+
+    static func setDiaryIdleTimeoutMinutes(_ minutes: Int) {
+        defaults.set(minutes, forKey: SettingKey.diaryIdleTimeoutMinutes)
+    }
+
+    static func resetDiaryIdleTimeoutMinutes() {
+        defaults.removeObject(forKey: SettingKey.diaryIdleTimeoutMinutes)
+    }
+
+    static var diaryPasswordEnabled: Bool {
+        defaults.bool(forKey: SettingKey.diaryPasswordEnabled)
+    }
+
+    static func setDiaryPasswordEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: SettingKey.diaryPasswordEnabled)
     }
 
     // MARK: - 加密

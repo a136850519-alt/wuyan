@@ -2,16 +2,39 @@ import SwiftUI
 
 enum Palette {
     static let cinnabar = Color(hex: "#D85A30")
-    static let cinnabarDeep = Color(hex: "#993C1D")
-    static let cinnabarSoft = Color(hex: "#FBF3EF")
-    static let cinnabarHover = Color(hex: "#FAECE7")
-    static let cinnabarStroke = Color(hex: "#E8C9BC")
+    static let cinnabarDeep = adaptive(light: "#A94120", dark: "#EC8057")
+    static let cinnabarSoft = adaptive(light: "#FBF3EF", dark: "#51362A")
+    static let cinnabarHover = adaptive(light: "#FAECE7", dark: "#604033")
+    static let cinnabarStroke = adaptive(light: "#E8C9BC", dark: "#785444")
     static let amber = Color(hex: "#C98522")
-    static let babyPink = Color(hex: "#FBEAF0")
-    static let babyPinkText = Color(hex: "#993556")
-    static let paper = Color(nsColor: .textBackgroundColor)
-    static let sidebarPaper = Color(nsColor: .windowBackgroundColor)
-    static let hairline = Color.primary.opacity(0.12)
+    static let babyPink = adaptive(light: "#EFD1DD", dark: "#543340")
+    static let babyPinkText = adaptive(light: "#792F4D", dark: "#FFD1E3")
+    static let paper = adaptive(light: "#FFFDF8", dark: "#222221")
+    static let sidebarPaper = adaptive(light: "#F0ECE3", dark: "#292927")
+    static let ink = adaptive(light: "#2E302A", dark: "#F2ECE4")
+    static let muted = adaptive(light: "#686A60", dark: "#B8B6AD")
+    static let timelineSelection = adaptive(light: "#F4DFD2", dark: "#51362A")
+    static let inspectorSurface = adaptive(light: "#F7F4ED", dark: "#262624")
+    static let cardSurface = adaptive(light: "#EEEADF", dark: "#34332E")
+    static let field = adaptive(light: "#EAE6DC", dark: "#373732")
+    static let moodSurface = adaptive(light: "#F5DCA4", dark: "#503C21")
+    static let moodText = adaptive(light: "#644415", dark: "#FFE0A3")
+    static let moodSelected = Color(hex: "#F7BB4A")
+    static let moodSelectedText = Color(hex: "#493410")
+    static let weatherSurface = adaptive(light: "#CEE7F0", dark: "#253E4C")
+    static let weatherText = adaptive(light: "#254C61", dark: "#D3EDF7")
+    static let aiSurface = adaptive(light: "#F2DED6", dark: "#49332D")
+    static let aiText = adaptive(light: "#5C2E20", dark: "#FFE1D6")
+    static let growthSurface = babyPink
+    static let hairline = adaptive(light: "#DED9CE", dark: "#41413C")
+
+    private static func adaptive(light: String, dark: String) -> Color {
+        let lightColor = NSColor(Color(hex: light))
+        let darkColor = NSColor(Color(hex: dark))
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+        })
+    }
     static let heatmap = [
         Color.clear,
         Color(hex: "#FAECE7"),

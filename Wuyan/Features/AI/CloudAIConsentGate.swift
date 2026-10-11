@@ -13,11 +13,13 @@ import SwiftUI
 @MainActor
 final class CloudAIConsentGateModel: ObservableObject {
     @Published var showsConfirm = false
+    @Published var scope = "本次功能所需的有限日记片段。"
     private var pendingAction: (() -> Void)?
 
     /// 判断是否需要拦截并弹出确认；若不需要则直接执行。
     /// S04/UI-05：会话信任绑定到「provider + 实际目的地」——目的地变化后旧授权失效。
-    func gate(appState: AppState, action: @escaping () -> Void) {
+    func gate(appState: AppState, scope: String = "本次功能所需的有限日记片段。", action: @escaping () -> Void) {
+        self.scope = scope
         if appState.aiService.requiresCloudConsent,
            appState.trustCloudDestination != appState.aiService.consentDestinationIdentifier {
             pendingAction = action
@@ -28,6 +30,7 @@ final class CloudAIConsentGateModel: ObservableObject {
     }
 
     func cancel() {
+        showsConfirm = false
         pendingAction = nil
     }
 
@@ -56,7 +59,7 @@ struct CloudAIConsentAlert: ViewModifier {
                 Button("仅本次") { gate.proceedOnce() }
             } message: {
                 // S04/UI-05：明示实际目的地与发送范围
-                Text("发送目的地：\(appState.aiService.consentDestinationIdentifier)。\n发送范围：本次功能所需的有限片段——问答最多 8 篇最近条目、写作引导最多 5 篇、月度回顾为近一个月；每篇有长度上限。已标记「禁止云端 AI」的板块不会发送。")
+                Text("发送目的地：\(appState.aiService.consentDestinationIdentifier)。\n发送范围：\(gate.scope)已标记「禁止云端 AI」的板块不会发送。")
             }
     }
 }

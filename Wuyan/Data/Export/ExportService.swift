@@ -64,7 +64,7 @@ enum ImportConflictStrategy: Equatable {
 }
 
 final class ExportService {
-    func exportMarkdown(entries: [Entry], mediaDAO: MediaAssetDAO? = nil, to directory: URL) throws {
+    func exportMarkdown(entries: [Entry], mediaDAO: MediaAssetDAO? = nil, dayNotes: DayNoteDAO? = nil, to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let mediaDirectory = directory.appendingPathComponent("media", isDirectory: true)
         try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
@@ -106,13 +106,19 @@ final class ExportService {
                 guard asset.localPath != nil, let safeName = assetSafeNames[asset.id] else { return nil }
                 return "![\(asset.filename)](media/\(safeName))"
             }.joined(separator: "\n")
+            let effectiveMood: Int?
+            if let dayNotes {
+                effectiveMood = try dayNotes.effectiveMood(dayKey: entry.dayDate)
+            } else {
+                effectiveMood = entry.mood
+            }
             let frontmatter = """
             ---
             id: \(entry.id.uuidString)
             boardId: \(entry.boardId.uuidString)
             journalDate: \(ISO8601DateFormatter().string(from: entry.journalDate))
             tags: \(entry.tags.joined(separator: ", "))
-            mood: \(entry.mood.map(String.init) ?? "")
+            mood: \(effectiveMood.map(String.init) ?? "")
             favorite: \(entry.isFavorite)
             ---
 

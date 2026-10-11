@@ -77,7 +77,7 @@ public struct EntryDAO: EntryRepository {
     func timelineSummaries(filter: TimelineFilter = .all) throws -> [EntrySummary] {
         try writer.read { db in
             var sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft, boardId, isFavorite, tags
                 FROM entry
                 WHERE deleted = 0
                 """
@@ -192,7 +192,7 @@ public struct EntryDAO: EntryRepository {
             let idStrings = ids.map { $0.uuidString }
             let placeholders = idStrings.map { _ in "?" }.joined(separator: ",")
             let sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft, boardId, isFavorite, tags
                 FROM entry
                 WHERE id IN (\(placeholders))
                 """
@@ -205,7 +205,7 @@ public struct EntryDAO: EntryRepository {
     func recentSummaries(limit: Int = 30) throws -> [EntrySummary] {
         try writer.read { db in
             let sql = """
-                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft
+                SELECT id, dayDate, journalDate, title, substr(body, 1, 160) AS bodyPreview, length(body) AS bodyLength, isDraft, boardId, isFavorite, tags
                 FROM entry
                 WHERE deleted = 0
                 ORDER BY journalDate DESC
@@ -231,17 +231,50 @@ public struct EntryDAO: EntryRepository {
     /// excludes the persisted RTFD blob; the plain body is enough for
     /// embeddings and avoids loading attachment data into the actor that
     /// initiated the request.
-    func aiEntries() throws -> [Entry] {
+    func aiEntries(boardId: UUID? = nil, limit: Int? = nil, since: Date? = nil, through: Date? = nil) throws -> [Entry] {
         try writer.read { db in
-            try Entry.fetchAll(db, sql: """
+            var sql = """
                 SELECT id, boardId, dayDate, journalDate, createdAt, updatedAt,
                        title, body, tags, mood, NULL AS bodyRTF, weatherJson,
-                       locationJson, mediaIds, isFavorite, isDraft, contentHash,
-                       dirty, deleted
-                FROM entry
-                WHERE deleted = 0
-                ORDER BY journalDate DESC, updatedAt DESC
-                """)
+                       locationJson, mediaIds, isFavorite, isDraft, contentHash, dirty, deleted
+                FROM entry WHERE deleted = 0
+                """
+            var arguments = StatementArguments()
+            if let boardId { sql += " AND boardId = ?"; arguments += [boardId.uuidString] }
+            if let since { sql += " AND journalDate >= ?"; arguments += [since] }
+            if let through { sql += " AND journalDate <= ?"; arguments += [through] }
+            sql += " ORDER BY journalDate DESC, id DESC"
+            if let limit { sql += " LIMIT ?"; arguments += [limit] }
+            return try Entry.fetchAll(db, sql: sql, arguments: arguments)
+        }
+    }
+
+    func anniversaryEntries(boardId: UUID, dayKey: String) throws -> [Entry] {
+        try writer.read { db in
+            // 仅取四篇纯文本，避免把往年图片/富文本加载给 AI。
+            try Entry.fetchAll(db, sql: """
+                SELECT id, boardId, dayDate, journalDate, createdAt, updatedAt, title, body,
+                       tags, mood, NULL AS bodyRTF, weatherJson, locationJson, mediaIds,
+                       isFavorite, isDraft, contentHash, dirty, deleted
+                FROM entry WHERE boardId = ? AND deleted = 0 AND dayDate < ?
+                AND substr(dayDate, 6, 5) = ? AND substr(dayDate, 1, 4) != ?
+                ORDER BY dayDate DESC LIMIT 4
+                """, arguments: [boardId.uuidString, dayKey, String(dayKey.suffix(5)), String(dayKey.prefix(4))])
+        }
+    }
+
+    func updateMetadata(id: UUID, weather: Weather?, location: GeoPlace?, expectedWeather: Weather?, expectedLocation: GeoPlace?) throws {
+        try writer.write { db in
+            guard var current = try Entry.fetchOne(db, key: id.uuidString), !current.deleted else {
+                throw EntrySaveError.entryRemoved(id)
+            }
+            guard current.weather == expectedWeather, current.location == expectedLocation else {
+                throw EntrySaveError.concurrentModification(id)
+            }
+            current.weather = weather
+            current.location = location
+            current.refreshForSave()
+            try current.update(db)
         }
     }
 
@@ -429,7 +462,10 @@ public struct EntryDAO: EntryRepository {
             if let board, try Board.fetchOne(db, key: board.id.uuidString) == nil {
                 try board.save(db)
             }
-            try dayNote?.save(db)
+            // 日札由日级冲突流程恢复，条目副本不能覆盖其他板块共用的新心情。
+            if let dayNote, try DayNote.fetchOne(db, key: dayNote.date) == nil {
+                try dayNote.save(db)
+            }
             var entry = entry
             entry.refreshForSave()
             var remappedMediaIDs: [UUID: UUID] = [:]
@@ -798,7 +834,7 @@ public struct EntryDAO: EntryRepository {
                 arguments += [boardId.uuidString]
             }
             if let mood = query.mood {
-                sql += " AND entry.mood = ?"
+                sql += " AND \(DayNoteDAO.effectiveMoodSQL) = ?"
                 arguments += [mood]
             }
             if let tag = query.tag, !tag.isEmpty {

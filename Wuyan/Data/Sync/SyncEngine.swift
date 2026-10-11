@@ -4,6 +4,7 @@ import Foundation
 enum SyncError: LocalizedError {
     case decryptFailed(reason: String)
     case rescueModeDisabled
+    case unsupportedFeatures([String])
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +12,8 @@ enum SyncError: LocalizedError {
             return "同步解密失败：\(reason)"
         case .rescueModeDisabled:
             return "救援模式：远端同步操作已禁用。"
+        case let .unsupportedFeatures(features):
+            return "远端日记使用了当前版本不支持的同步能力（\(features.joined(separator: "、"))），请先升级晤言后再同步。"
         }
     }
 }
@@ -71,6 +74,7 @@ actor SyncEngine {
     private var changedDayNoteDates: Set<String> = []
     private var changedBoardIDs: Set<UUID> = []
     private static let reportThrottleInterval: Duration = .milliseconds(250)
+    private static let supportedFeatures: Set<String> = ["daynote-mood"]
 
     init(
         provider: RemoteStorageProvider,
@@ -120,12 +124,19 @@ actor SyncEngine {
         var progress = SyncProgress(phase: "准备同步", completedUnitCount: 0, totalUnitCount: 7)
         do {
             await self.report(progress)
-            try await ensureRemoteTree()
+            // Read and validate the manifest before creating any remote
+            // directories, so an unsupported protocol feature is rejected
+            // without mutating the backend.
+            try await provider.validateBasePath()
             progress.completedUnitCount += 1
             progress.phase = "正在读取远端索引"
             await self.report(progress)
 
             let (loadedManifest, manifestETag, manifestExisted) = try await loadManifest()
+            let unsupported = Set(loadedManifest.requiredFeatures).subtracting(Self.supportedFeatures)
+            guard unsupported.isEmpty else { throw SyncError.unsupportedFeatures(unsupported.sorted()) }
+            try await ensureRemoteTree(validateBasePath: false)
+            progress.completedUnitCount += 1
             let baseManifestRevision = loadedManifest.revision
             // 空清单始终视为后端初始化/重置状态。持久化标记只能减少工作量，
             // 不能证明远端仍然存在数据；后端被清空后若继续信任旧标记，会漏推
@@ -810,7 +821,8 @@ actor SyncEngine {
         return uploaded
     }
 
-    private func ensureRemoteTree() async throws {
+    private func ensureRemoteTree(validateBasePath: Bool = true) async throws {
+        if validateBasePath { try await provider.validateBasePath() }
         // 目录树一旦建好就基本不会再消失：命中缓存时只做一次轻量存在性校验，
         // 替代原先每次同步都串行发十几个 MKCOL 的固定开销。校验失败说明目录被外部清掉，重建并刷新缓存。
         let key = backendFingerprint.isEmpty ? "sync.remoteTreeReady" : "sync.remoteTreeReady.\(backendFingerprint)"
@@ -1020,6 +1032,7 @@ actor SyncEngine {
             let purgedBeforeNormalize = Set(purgedByID.keys)
             manifest.purged = purgedByID.map { PurgedEntry(id: $0.key, deletedAt: $0.value) }
             Self.normalizePurges(&manifest)
+            manifest.requiredFeatures = Array(Set(manifest.requiredFeatures).union(Self.supportedFeaturesForLocalData(manifest: manifest, database: database))).sorted()
             let restoredIDs = purgedBeforeNormalize.subtracting(Set((manifest.purged ?? []).map(\.id)))
             if !restoredIDs.isEmpty {
                 try database.syncStateDAO.dropPurged(ids: Array(restoredIDs))
@@ -1080,6 +1093,7 @@ actor SyncEngine {
         changedBoardIDs: Set<UUID> = []
     ) -> Manifest {
         var merged = latest
+        merged.requiredFeatures = Array(Set(latest.requiredFeatures).union(local.requiredFeatures)).sorted()
         var entryByID = Dictionary(uniqueKeysWithValues: latest.entries.map { ($0.id, $0) })
         for candidate in local.entries {
             guard changedEntryIDs.contains(candidate.id) else { continue }
@@ -1107,6 +1121,14 @@ actor SyncEngine {
         merged.purged = purgedByID.map { PurgedEntry(id: $0.key, deletedAt: $0.value) }
         normalizePurges(&merged)
         return merged
+    }
+
+    private static func supportedFeaturesForLocalData(manifest: Manifest, database: AppDatabase) -> Set<String> {
+        var features = Set(manifest.requiredFeatures)
+        if (try? database.dayNoteDAO.all().contains(where: { $0.mood != nil || $0.moodCleared })) == true {
+            features.insert("daynote-mood")
+        }
+        return features
     }
 
     /// V3-15：清除记录与 entries 的一致化，保证 revision 稳定且旧客户端陈旧推送
@@ -1585,10 +1607,13 @@ actor SyncEngine {
                 do {
                     try database.dayNoteDAO.upsert(note, expectedHash: nil)
                 } catch EntrySaveError.concurrentModification {
-                    // A local note appeared after the snapshot was read. Keep
-                    // the remote losing version in the day-note conflict log.
-                    try database.dayNoteDAO.saveConflictCopy(note)
-                    WuyanLog.sync.warning("日札 (remote.date) 在拉取期间被本地创建，远端版本已留档")
+                    // Pulling an entry envelope can install this exact note
+                    // after the initial snapshot. Only a different value is a conflict.
+                    let installed = try database.dayNoteDAO.note(dayKey: remote.date)
+                    if installed.map(Hashing.dayNoteHash) != Hashing.dayNoteHash(note) {
+                        try database.dayNoteDAO.saveConflictCopy(note)
+                        WuyanLog.sync.warning("日札 \(remote.date) 在拉取期间被本地创建，远端版本已留档")
+                    }
                 }
                 try database.dayNoteDAO.setBaseline(date: remote.date, hash: remote.hash)
                 pulled += 1
@@ -1608,7 +1633,7 @@ actor SyncEngine {
                     pulled += 1
                 } catch EntrySaveError.concurrentModification {
                     try database.dayNoteDAO.saveConflictCopy(note)
-                    WuyanLog.sync.warning("日札 (remote.date) 在拉取期间再次修改，远端版本已留档")
+                    WuyanLog.sync.warning("日札 \(remote.date) 在拉取期间再次修改，远端版本已留档")
                 }
             } else {
                 // 双端修改或无基线：保留本地版本并把远端落败版本留档，
@@ -1880,7 +1905,7 @@ actor SyncEngine {
             let envelope = try buildEnvelope(for: local)
             try await provider.put(item.path, data: try encode(envelope), contentType: "application/json")
             repaired += 1
-            WuyanLog.sync.warning("巡检补传缺失的条目对象：\(item.path)")
+            WuyanLog.sync.info("巡检补传缺失的条目对象：\(item.path)")
         }
         for item in manifest.daynotes {
             guard let local = try database.dayNoteDAO.note(dayKey: item.date),
@@ -1889,7 +1914,7 @@ actor SyncEngine {
             try await provider.mkcolRecursive((item.path as NSString).deletingLastPathComponent + "/")
             try await provider.put(item.path, data: try encode(local), contentType: "application/json")
             repaired += 1
-            WuyanLog.sync.warning("巡检补传缺失的日札对象：\(item.path)")
+            WuyanLog.sync.info("巡检补传缺失的日札对象：\(item.path)")
         }
         // 媒体与缩略图：内容寻址对象同样可能因历史缺陷/后端丢失而缺失。
         for item in manifest.entries where !item.deleted {
@@ -1918,7 +1943,7 @@ actor SyncEngine {
                             try await provider.put(remotePath, data: try encodeRaw(data), contentType: "application/octet-stream")
                         }
                         repaired += 1
-                        WuyanLog.sync.warning("巡检补传缺失的媒体对象：\(remotePath)")
+                        WuyanLog.sync.info("巡检补传缺失的媒体对象：\(remotePath)")
                     }
                 }
                 if asset.thumbnailPath != nil, let thumbPath = asset.absoluteThumbnailPath,
@@ -1933,7 +1958,7 @@ actor SyncEngine {
                             try await provider.put(thumbRemote, data: try encodeRaw(thumbData), contentType: "application/octet-stream")
                         }
                         repaired += 1
-                        WuyanLog.sync.warning("巡检补传缺失的缩略图对象：\(thumbRemote)")
+                        WuyanLog.sync.info("巡检补传缺失的缩略图对象：\(thumbRemote)")
                     }
                 }
             }

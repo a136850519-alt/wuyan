@@ -62,6 +62,12 @@ struct WritingContext {
     var date: Date
     var weather: Weather?
     var recentEntries: [Entry]
+    var boardName: String? = nil
+    var boardKind: BoardKind? = nil
+    var boardId: UUID? = nil
+    var annualAge: String? = nil
+    var draft: Entry? = nil
+    var mood: Int? = nil
 }
 
 enum Period: String {

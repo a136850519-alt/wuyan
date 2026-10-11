@@ -2,31 +2,48 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var columns: NavigationSplitViewVisibility = .all
     @State private var showsOnboarding = !AppSettings.onboardingCompleted
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
-        } content: {
-            TimelineView()
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
-        } detail: {
-            switch appState.sidebarSelection {
-            case .calendar:
-                CalendarHistoryView()
-            case .settings:
-                SettingsView()
-            case .trash:
-                TrashView()
-            default:
-                EditorView()
+        Group {
+            if appState.shouldPresentDiaryLock {
+                DiaryLockView()
+                    .environmentObject(appState)
+                    .transition(.opacity)
+            } else {
+                NavigationSplitView(columnVisibility: $columns) {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
+                } content: {
+                    TimelineView()
+                        .navigationSplitViewColumnWidth(min: 240, ideal: 276, max: 360)
+                } detail: {
+                    switch appState.sidebarSelection {
+                    case .calendar:
+                        CalendarHistoryView()
+                    case .settings:
+                        SettingsView()
+                    case .trash:
+                        TrashView()
+                    default:
+                        EditorView()
+                    }
+                }
+            }
+        }
+        .toolbar {
+            if !appState.shouldPresentDiaryLock {
+                ToolbarItem(placement: .navigation) {
+                Button { columns = .all } label: { Label("显示年份和时间线", systemImage: "rectangle.split.3x1") }
+                    .help("恢复年份导航和时间线")
+                }
             }
         }
         .background(Palette.paper)
         .overlay(alignment: .top) {
             // UI-07：只读救援模式横幅——数据库未正常加载时的唯一合法操作出口
-            if appState.isRescueMode {
+            if appState.isRescueMode && !appState.shouldPresentDiaryLock {
                 RescueModeBanner()
             }
         }
@@ -47,7 +64,7 @@ struct RootView: View {
             OnboardingView(isPresented: $showsOnboarding)
         }
         .alert("晤言遇到一个问题", isPresented: Binding(
-            get: { appState.errorMessage != nil },
+            get: { appState.errorMessage != nil && !appState.shouldPresentDiaryLock },
             set: { if !$0 { appState.errorMessage = nil } }
         )) {
             Button("好") {

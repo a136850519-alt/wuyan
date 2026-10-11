@@ -45,7 +45,7 @@ public final class AppDatabase {
         return try AppDatabase(writer: DatabaseQueue(configuration: configuration))
     }
 
-    private static var migrator: DatabaseMigrator {
+    static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try V1Migration.migrate(db)
@@ -264,6 +264,18 @@ public final class AppDatabase {
                 table.column("createdAt", .datetime).notNull()
             }
             try db.create(index: "idx_daynote_conflict_date", on: "daynote_conflict", columns: ["date"])
+        }
+        migrator.registerMigration("v17-daynote-mood") { db in
+            // 日级心情是可选字段，旧库与旧同步载荷缺失时继续表示“尚未记录”。
+            try db.alter(table: "daynote") { table in
+                table.add(column: "mood", .integer)
+            }
+        }
+        migrator.registerMigration("v18-daynote-mood-clear") { db in
+            // 区分「尚未记录」与用户明确清除，避免旧条目心情兼容投影重新出现。
+            try db.alter(table: "daynote") { table in
+                table.add(column: "moodCleared", .boolean).notNull().defaults(to: false)
+            }
         }
         return migrator
     }

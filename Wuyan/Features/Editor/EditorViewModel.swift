@@ -9,6 +9,7 @@ final class EditorViewModel: ObservableObject {
     @Published var bodyRTF: Data?
     @Published var tagsText = ""
     @Published var mood: Int?
+    @Published var moodNeedsConfirmation = false
     @Published var journalDate = Date()
     @Published var isFavorite = false
     @Published var boardId: UUID?
@@ -26,6 +27,7 @@ final class EditorViewModel: ObservableObject {
     /// 当前条目的旧版本已被同步留档到冲突列表，即使编辑器当时没有未保存输入
     /// 也要给出可见提示。
     @Published var externalConflictCopyDetected = false
+    @Published var switchBlockedMessage: String?
     @Published var archiveLocked = false
     /// R1-4: 缓存非空白字数，避免 View body 中每次 body 变化都 O(n) 重算
     @Published var nonWhitespaceCount: Int = 0
@@ -38,13 +40,18 @@ final class EditorViewModel: ObservableObject {
     private var loadedContentHash: String?
     /// 观察当前打开条目的数据库变化，感知同步等外部改写。
     private var observationTask: Task<Void, Never>?
+    private var moodObservationTask: Task<Void, Never>?
+    private var moodDayKey: String?
+    private var moodSnapshot = DayMoodSnapshot(value: nil, hasLegacyConflict: false, noteHash: nil)
+    var commitPendingRichText: (() -> Void)?
 
     deinit {
         observationTask?.cancel()
+        moodObservationTask?.cancel()
     }
 
     init() {
-        Publishers.CombineLatest4($title, $body, $tagsText, $mood)
+        Publishers.CombineLatest3($title, $body, $tagsText)
             .dropFirst()
             .sink { [weak self] _ in
                 self?.scheduleSave()
@@ -71,6 +78,10 @@ final class EditorViewModel: ObservableObject {
                 self?.scheduleSave()
             }
             .store(in: &cancellables)
+
+        $journalDate.dropFirst().sink { [weak self] date in
+            self?.observeMood(dayKey: DayKey.string(from: date))
+        }.store(in: &cancellables)
     }
 
     func configure(appState: AppState) {
@@ -80,10 +91,19 @@ final class EditorViewModel: ObservableObject {
     func load(id: UUID?, appState: AppState) {
         configure(appState: appState)
         // 切换条目前先 flush 当前未落盘的变更，防丢失最后 0.5 秒输入
+        let previousID = entry?.id
         flushIfNeeded(appState: appState)
+        if isDirty {
+            if id != previousID { appState.selectedEntryId = previousID }
+            switchBlockedMessage = "当前编辑尚未保存，请先处理冲突。"
+            return
+        }
+        switchBlockedMessage = nil
         saveTask?.cancel()
         saveTask = nil
         guard let id else {
+            moodObservationTask?.cancel()
+            moodDayKey = nil
             self.entry = nil
             loadedContentHash = nil
             externalUpdateDetected = false
@@ -126,8 +146,8 @@ final class EditorViewModel: ObservableObject {
         body = fetched.body
         bodyRTF = fetched.bodyRTF
         tagsText = fetched.tags.joined(separator: ", ")
-        mood = fetched.mood
         journalDate = fetched.journalDate
+        observeMood(dayKey: fetched.dayDate)
         isFavorite = fetched.isFavorite
         boardId = fetched.boardId
         mediaAssets = (try? appState.db.mediaAssetDAO.assets(for: fetched.id)) ?? []
@@ -142,7 +162,7 @@ final class EditorViewModel: ObservableObject {
     /// rebased without replacing text currently being edited.
     private static func editorFieldsEqual(_ a: Entry, _ b: Entry) -> Bool {
         a.title == b.title && a.body == b.body && a.bodyRTF == b.bodyRTF &&
-            a.tags == b.tags && a.mood == b.mood && a.journalDate == b.journalDate &&
+            a.tags == b.tags && a.journalDate == b.journalDate &&
             a.dayDate == b.dayDate && a.isFavorite == b.isFavorite &&
             a.boardId == b.boardId && a.deleted == b.deleted
     }
@@ -162,20 +182,22 @@ final class EditorViewModel: ObservableObject {
         longitude = fetched.location.map { String($0.lon) } ?? ""
     }
 
-    func saveNow(appState: AppState) {
+    @discardableResult
+    func saveNow(appState: AppState) -> Bool {
+        commitPendingRichText?()
         // UI-07：救援模式下数据库不可信，禁止制造「已保存」假象
         guard !appState.isRescueMode else {
             appState.errorMessage = "救援模式：数据库未正常加载，当前内容不会被保存。请先导出救援副本。"
-            return
+            return false
         }
         // UI-02：归档进行中的年份锁定编辑，防止上传后本地删除丢掉新编辑
         if let archiving = appState.archivingYear,
            archiving == AppState.year(fromDayKey: DayKey.string(from: journalDate)) {
             archiveLocked = true
-            return
+            return false
         }
         archiveLocked = false
-        guard var entry else { return }
+        guard var entry else { return false }
         applyEditorFields(to: &entry)
 
         do {
@@ -205,13 +227,13 @@ final class EditorViewModel: ObservableObject {
                     lastSavedAt = Date()
                     appState.refreshRemindersForToday()
                     appState.syncCoordinator.notifyEditCompleted()
-                    return
+                    return true
                 } catch EntrySaveError.concurrentModification {
                     // A second concurrent edit is a real conflict; preserve it
                     // through the regular banner/flush path below.
                 } catch {
                     appState.errorMessage = error.localizedDescription
-                    return
+                    return false
                 }
             }
             markExternalUpdateDetected()
@@ -226,6 +248,7 @@ final class EditorViewModel: ObservableObject {
         } catch {
             appState.errorMessage = error.localizedDescription
         }
+        return !isDirty && self.entry != nil
     }
 
     /// 把编辑器字段写回条目（自动保存与「以当前编辑为准」共用）。
@@ -238,7 +261,6 @@ final class EditorViewModel: ObservableObject {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        entry.mood = mood
         entry.journalDate = journalDate
         // UI-08①（已确认）：改「记录时间」即改归属日——按天分组与年度归档
         // 跟随用户认定的日期；跨年修改会同时移动归档年份。
@@ -246,6 +268,55 @@ final class EditorViewModel: ObservableObject {
         entry.isFavorite = isFavorite
         if let boardId {
             entry.boardId = boardId
+        }
+    }
+
+    private func observeMood(dayKey: String) {
+        guard let appState, moodDayKey != dayKey else { return }
+        moodObservationTask?.cancel()
+        moodDayKey = dayKey
+        do {
+            moodSnapshot = try appState.dayNotes.moodSnapshot(dayKey: dayKey)
+            mood = moodSnapshot.value
+            moodNeedsConfirmation = moodSnapshot.hasLegacyConflict
+        } catch {
+            mood = nil
+            appState.errorMessage = error.localizedDescription
+        }
+        moodObservationTask = Task { [weak self] in
+            for await snapshot in appState.dayNotes.observeMood(dayKey: dayKey) {
+                guard let self, !Task.isCancelled, self.moodDayKey == dayKey else { return }
+                self.moodSnapshot = snapshot
+                self.mood = snapshot.value
+                self.moodNeedsConfirmation = snapshot.hasLegacyConflict
+            }
+        }
+    }
+
+    var currentMoodSnapshot: DayMoodSnapshot { moodSnapshot }
+
+    func saveMood(_ value: Int, expectedSnapshot: DayMoodSnapshot, appState: AppState) -> Bool {
+        saveMood(value as Int?, expectedSnapshot: expectedSnapshot, appState: appState)
+    }
+
+    @discardableResult
+    func saveMood(_ value: Int?, expectedSnapshot: DayMoodSnapshot, appState: AppState) -> Bool {
+        guard !appState.isRescueMode,
+              let dayKey = moodDayKey,
+              appState.archivingYear != AppState.year(fromDayKey: dayKey) else {
+            appState.errorMessage = "当前日期暂不能修改，请稍后重试。"
+            return false
+        }
+        do {
+            try appState.dayNotes.setMood(value, dayKey: dayKey, expectedNoteHash: expectedSnapshot.noteHash)
+            moodSnapshot = try appState.dayNotes.moodSnapshot(dayKey: dayKey)
+            mood = moodSnapshot.value
+            moodNeedsConfirmation = false
+            appState.syncCoordinator.notifyEditCompleted()
+            return true
+        } catch {
+            appState.errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -310,66 +381,28 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    func saveMetadata(appState: AppState) {
-        // UI-07：救援模式禁止写入
-        guard !appState.isRescueMode else {
-            appState.errorMessage = "救援模式：数据库未正常加载，当前修改不会被保存。"
-            return
+    func saveMetadata(_ draft: MetadataDraft, baseline: Entry, appState: AppState) throws {
+        guard !appState.isRescueMode, let current = entry, current.id == baseline.id,
+              current.dayDate == baseline.dayDate,
+              appState.archivingYear != AppState.year(fromDayKey: current.dayDate) else {
+            throw MetadataError.unavailable
         }
-        guard var entry else { return }
-        let condition = weatherCondition.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !condition.isEmpty {
-            if let temp = Double(weatherTemp.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                entry.weather = Weather(condition: condition, tempC: temp)
-            } else {
-                // 温度解析失败：保留原天气，显示校验错误
-                if entry.weather != nil {
-                    appState.errorMessage = "温度格式不正确，天气信息保留原值。"
-                } else {
-                    // 原来没有天气，只能放弃本次设置
-                    appState.errorMessage = "温度格式不正确，请输入有效数字。"
-                }
-            }
-        } else {
-            entry.weather = nil
+        let (weather, location) = try draft.validated()
+        try appState.entries.updateMetadata(id: current.id, weather: weather, location: location,
+                                            expectedWeather: baseline.weather, expectedLocation: baseline.location)
+        if let fresh = try appState.entries.entry(id: current.id) {
+            // A metadata save must not authorize overwriting a concurrent body
+            // change with the editor's older draft on its next autosave.
+            handleObservedEntry(fresh, appState: appState)
         }
+        appState.syncCoordinator.notifyEditCompleted()
+    }
 
-        let place = placeName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !place.isEmpty {
-            if let lat = Double(latitude), let lon = Double(longitude),
-               (-90...90).contains(lat), (-180...180).contains(lon) {
-                entry.location = GeoPlace(lat: lat, lon: lon, placeName: place)
-            } else {
-                // 经纬度解析失败或超范围：保留原地点，显示校验错误
-                if entry.location != nil {
-                    appState.errorMessage = "经纬度格式不正确或超范围，地点信息保留原值。"
-                } else {
-                    appState.errorMessage = "经纬度格式不正确，请输入有效数值（纬度 -90~90，经度 -180~180）。"
-                }
-            }
-        } else {
-            entry.location = nil
-        }
-
-        do {
-            try appState.entries.save(entry, expectedContentHash: loadedContentHash)
-            self.entry = try appState.entries.entry(id: entry.id) ?? entry
-            loadedContentHash = self.entry?.contentHash
-            externalUpdateDetected = false
-            appState.syncCoordinator.notifyEditCompleted()
-        } catch EntrySaveError.concurrentModification {
-            markExternalUpdateDetected()
-        } catch EntrySaveError.entryRemoved {
-            preserveRemovedEntryAsNewEntry(appState: appState)
-            self.entry = nil
-            loadedContentHash = nil
-            isDirty = false
-            externalUpdateDetected = false
-            externalConflictCopyDetected = false
-            appState.selectedEntryId = nil
-        } catch {
-            appState.errorMessage = error.localizedDescription
-        }
+    var draftEntry: Entry? {
+        guard var draft = entry else { return nil }
+        applyEditorFields(to: &draft)
+        draft.mood = mood
+        return draft
     }
 
     /// 暂停自动保存并亮出冲突横幅（不弹全局 alert）。
@@ -408,11 +441,14 @@ final class EditorViewModel: ObservableObject {
     /// 横幅「重新载入」：放弃未保存的编辑，以数据库当前版本为准。
     func reloadFromDatabase(appState: AppState) {
         guard let id = entry?.id else { return }
+        saveTask?.cancel()
+        isDirty = false
         load(id: id, appState: appState)
     }
 
     /// 将当前条目的未落盘变更立即同步写出（切换条目/退出时调用）
     func flushIfNeeded(appState: AppState) {
+        commitPendingRichText?()
         guard isDirty, entry != nil else { return }
         saveTask?.cancel()
         saveTask = nil
@@ -452,6 +488,7 @@ final class EditorViewModel: ObservableObject {
                 let label = draft.title ?? String(draft.body.prefix(20))
                 appState.errorMessage = "「\(label)」已有待处理冲突，未保存的修改已另存为新日记「\(detached.title ?? "未保存的编辑")」。"
             }
+            isDirty = false
         } catch {
             appState.errorMessage = "未保存的编辑无法留档：\(error.localizedDescription)"
         }
@@ -487,6 +524,7 @@ final class EditorViewModel: ObservableObject {
         guard let id else { return }
         observationTask = Task { [weak self] in
             for await updated in appState.entries.observeEntry(id: id) {
+                guard !Task.isCancelled, self?.entry?.id == id else { return }
                 self?.handleObservedEntry(updated, appState: appState)
             }
         }

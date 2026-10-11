@@ -10,11 +10,11 @@ public enum DayKey {
     }()
 
     public static func string(from date: Date) -> String {
-        formatter.string(from: recordingDate(for: date))
+        withFormatter { $0.string(from: recordingDate(for: date)) }
     }
 
     public static func date(from string: String) -> Date? {
-        formatter.date(from: string)
+        withFormatter { $0.date(from: string) }
     }
 
     public static var today: String {
@@ -33,6 +33,13 @@ public enum DayKey {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
+    private static let formatterLock = NSLock()
+
+    private static func withFormatter<T>(_ body: (DateFormatter) -> T) -> T {
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        return body(formatter)
+    }
 }
 
 extension JSONEncoder {

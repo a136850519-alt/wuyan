@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 
 protocol RemoteStorageProvider: Sendable {
+    /// WebDAV 实现用于在创建应用目录前验证配置的基础路径；其它后端无需探测。
+    func validateBasePath() async throws
     func mkcolRecursive(_ path: String) async throws
     func list(_ path: String) async throws -> [RemoteItem]
     func get(_ path: String) async throws -> Data
@@ -29,6 +31,7 @@ protocol RemoteStorageProvider: Sendable {
 }
 
 extension RemoteStorageProvider {
+    func validateBasePath() async throws {}
     func getVersioned(_ path: String) async throws -> RemoteObjectSnapshot {
         let data = try await get(path)
         return RemoteObjectSnapshot(data: data, etag: remoteContentFingerprint(data))
@@ -238,6 +241,7 @@ enum RemoteStorageError: LocalizedError {
     case multipartFailed(path: String, reason: String)
     case concurrentModification(path: String)
     case archiveRequiresSync(dates: [String])
+    case basePathUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -268,6 +272,8 @@ enum RemoteStorageError: LocalizedError {
             return "远端对象在提交期间被其它设备更新：\(path)。已重新合并或请稍后重试。"
         case let .archiveRequiresSync(dates):
             return "有 \(dates.count) 篇在其它设备上更新过，请先同步再归档（\(dates.prefix(3).joined(separator: "、"))）。"
+        case let .basePathUnavailable(path):
+            return "已配置的 WebDAV 目录不存在或代理未转发（地址：\(path)）。请检查 NAS 共享目录与反向代理设置。"
         }
     }
 }

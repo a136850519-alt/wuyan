@@ -26,7 +26,8 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("Quartz")
+                .linkedFramework("Quartz"),
+                .linkedFramework("LocalAuthentication")
             ]
         ),
         .testTarget(

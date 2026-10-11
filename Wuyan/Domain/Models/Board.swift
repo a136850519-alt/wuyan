@@ -116,13 +116,12 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
     ]
 
     public func ageText(on date: Date = Date()) -> String? {
+        ageText(in: Int(DayKey.string(from: date).prefix(4)) ?? Calendar.current.component(.year, from: date))
+    }
+
+    public func ageText(in year: Int) -> String? {
         guard kind == .growth, let babyBirthday else { return nil }
-        let components = Calendar.current.dateComponents([.year, .month], from: babyBirthday, to: date)
-        let years = max(0, components.year ?? 0)
-        let months = max(0, components.month ?? 0)
-        if years > 0 {
-            return "\(years) 岁 \(months) 个月"
-        }
-        return "\(months) 个月"
+        let birthYear = Calendar.current.component(.year, from: babyBirthday)
+        return year < birthYear ? "未出生" : "\(year - birthYear) 岁"
     }
 }

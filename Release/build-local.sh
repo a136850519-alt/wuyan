@@ -2,11 +2,12 @@
 set -euo pipefail
 
 # 晤言 · 自用版打包脚本
-# 编译 → 组装 .app → ad-hoc 签名 → 生成 DMG。
-# 无需 Apple 开发者账号、无需公证。适合自己 / 自家几台 Mac 安装。
+# 编译 → 组装 .app → 固定本地证书签名 → 生成 DMG。
+# 需要预先创建固定的“代码签名”证书（默认名称：晤言 Local Signing）。
 #
 # 用法：  bash Release/build-local.sh
 # 产物：  dist/晤言.app  和  dist/晤言.dmg
+# 可用 WUYAN_PACKAGE_OUTPUT_DIR 指定独立输出目录，保留现有 dist 产物。
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -14,12 +15,26 @@ cd "$ROOT"
 APP_NAME="晤言"
 BIN_NAME="Wuyan"
 CONFIG="release"
-DIST="$ROOT/dist"
+DIST="${WUYAN_PACKAGE_OUTPUT_DIR:-$ROOT/dist}"
 APP="$DIST/$APP_NAME.app"
 DMG="$DIST/$APP_NAME.dmg"
 INFO_PLIST="$ROOT/Release/Info.plist"
 ENTITLEMENTS="$ROOT/Release/Wuyan.entitlements"
 ICON="$ROOT/Release/AppIcon.icns"   # 可选：放了才接入图标
+SIGNING_IDENTITY="${WUYAN_SIGNING_IDENTITY:-晤言 Local Signing}"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "错误：工作区有未提交改动，拒绝生成正式安装包。" >&2
+  echo "请先提交当前版本，或使用独立干净 worktree 打包。" >&2
+  exit 1
+fi
+
+AVAILABLE_SIGNING_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+if ! grep -Fq "\"$SIGNING_IDENTITY\"" <<< "$AVAILABLE_SIGNING_IDENTITIES"; then
+  echo "错误：找不到固定签名身份 '$SIGNING_IDENTITY'。" >&2
+  echo "请在钥匙串访问中创建代码签名证书，或设置 WUYAN_SIGNING_IDENTITY。" >&2
+  exit 1
+fi
 
 echo "▶︎ 1/5 编译 release（首次较慢）…"
 swift build -c "$CONFIG"
@@ -57,8 +72,8 @@ else
   echo "    · 未找到 Release/AppIcon.icns，跳过图标（用系统默认图标）"
 fi
 
-echo "▶︎ 3/5 ad-hoc 签名 …"
-codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP"
+echo "▶︎ 3/5 固定证书签名（$SIGNING_IDENTITY）…"
+codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGNING_IDENTITY" "$APP"
 # Q02：签名验证失败必须阻断发布，不能 || true 吞掉后继续出 DMG。
 codesign --verify --verbose=1 "$APP"
 

@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import Quartz
 
 enum SidebarSelection: Hashable {
     case all
@@ -54,8 +56,26 @@ final class AppState: ObservableObject {
     @Published var pendingDeleteEntryId: UUID?
     /// 导入/导出任务跨设置页生命周期互斥，避免离开页面后重复还原。
     @Published var isBackupTaskRunning = false
+    /// 日记访问锁状态在所有窗口共享。启用后应用启动即锁定。
+    @Published private(set) var isDiaryLocked: Bool
+    @Published private(set) var isDiaryPasswordEnabled: Bool
+    @Published private(set) var diaryIdleTimeoutMinutes: Int
     /// UI-07：数据库打开失败的只读救援模式。禁止编辑与同步，提供救援副本导出。
     let isRescueMode: Bool
+
+    var diaryCredentialUnavailable: Bool {
+        if case .unavailable = DiaryLockStore.credentialState { return true }
+        return false
+    }
+
+    /// Used by RootView before the idle timer gets a chance to fire, so reopening
+    /// a window after a long idle period never renders the diary for one frame.
+    var shouldPresentDiaryLock: Bool {
+        guard isDiaryPasswordEnabled else { return false }
+        if isDiaryLocked { return true }
+        let timeout = AppSettings.diaryIdleTimeoutSeconds
+        return timeout > 0 && Date().timeIntervalSince(diaryLastActivity) >= timeout
+    }
 
     // 同步状态前向属性（兼容已有视图引用）
     var syncMessage: String? { syncCoordinator.syncMessage }
@@ -65,6 +85,11 @@ final class AppState: ObservableObject {
     /// 订阅 SyncCoordinator 的 objectWillChange，使其 @Published 变化能触发本对象 UI 刷新。
     private var syncCancellable: AnyCancellable?
     private var lastReminderRefresh: (dayKey: String, hasWrittenToday: Bool)?
+    private var diaryLastActivity = Date()
+    private var diaryActivityMonitor: Any?
+    private var diaryNotificationTokens: [NSObjectProtocol] = []
+    private var diaryDistributedNotificationTokens: [NSObjectProtocol] = []
+    private var diaryUnlockThrottle = DiaryUnlockThrottle()
 
     // R2-6/Q01: 归档年份的读写统一经 AppSettings（SettingKey.archivedYears），
     // AppState 不再直接持有 defaults key。
@@ -93,11 +118,15 @@ final class AppState: ObservableObject {
         }
         self.mediaStore = mediaStore
         self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore, rescueMode: rescueMode)
+        self.isDiaryPasswordEnabled = DiaryLockStore.isEnabled
+        self.isDiaryLocked = DiaryLockStore.isEnabled
+        self.diaryIdleTimeoutMinutes = AppSettings.diaryIdleTimeoutMinutes
         self.aiService = AIService(
             provider: ProviderFactory.makeAIProvider(),
             isEnabled: AppSettings.aiEnabled,
             ritualPolishingEnabled: AppSettings.aiRitual
         )
+        self.aiService.moodForDay = { try database.dayNoteDAO.effectiveMood(dayKey: $0) }
         self.aiService.cloudBlockedBoardIds = Self.cloudBlockedBoardIds(boards)
         // Q01：归档年份读写统一走 AppSettings（可注入 defaults），
         // 测试构造的 AppState 与被测设置共享同一容器。
@@ -141,6 +170,109 @@ final class AppState: ObservableObject {
         syncCoordinator.onArchiveFinished = { [weak self] _ in
             self?.archivingYear = nil
         }
+    }
+
+    // MARK: - 日记密码锁
+
+    func startDiaryLockMonitoring() {
+        guard diaryActivityMonitor == nil else { return }
+        diaryLastActivity = Date()
+        diaryActivityMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+            Task { @MainActor in self?.recordDiaryActivity() }
+            return event
+        }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        diaryNotificationTokens.append(workspaceCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.lockDiary() }
+        })
+        diaryNotificationTokens.append(workspaceCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.lockDiary() }
+        })
+        diaryNotificationTokens.append(workspaceCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.lockDiary() }
+        })
+        diaryDistributedNotificationTokens.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.lockDiary() }
+        })
+        diaryNotificationTokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.checkDiaryIdleLock() }
+        })
+    }
+
+    func recordDiaryActivity() {
+        guard !isDiaryLocked else { return }
+        diaryLastActivity = Date()
+    }
+
+    func checkDiaryIdleLock() {
+        guard isDiaryPasswordEnabled, !isDiaryLocked else { return }
+        let timeout = AppSettings.diaryIdleTimeoutSeconds
+        guard timeout > 0, Date().timeIntervalSince(diaryLastActivity) >= timeout else { return }
+        lockDiary()
+    }
+
+    func lockDiary() {
+        guard isDiaryPasswordEnabled, !isDiaryLocked else { return }
+        // 让编辑器在仍挂载时同步 flush，随后才切换根视图，避免 SwiftUI
+        // 因为分支卸载而错过最后一段富文本保存。
+        NotificationCenter.default.post(name: .wuyanDiaryLockRequested, object: nil)
+        isDiaryLocked = true
+        isShowingRitual = false
+        boardChooserDay = nil
+        pendingDeleteEntryId = nil
+        errorMessage = nil
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        QLPreviewPanel.shared()?.orderOut(nil)
+    }
+
+    func unlockDiary(password: String) -> Bool {
+        guard isDiaryPasswordEnabled, DiaryLockStore.verify(password: password) else { return false }
+        unlockDiaryAfterVerification()
+        return true
+    }
+
+    func diaryUnlockRemainingSeconds(at date: Date = Date()) -> Int {
+        diaryUnlockThrottle.remainingSeconds(at: date)
+    }
+
+    @discardableResult
+    func recordDiaryUnlockFailure(at date: Date = Date()) -> Int {
+        diaryUnlockThrottle.recordFailure(at: date)
+    }
+
+    @discardableResult
+    func unlockDiaryAfterVerification() -> Bool {
+        guard isDiaryPasswordEnabled else { return false }
+        diaryUnlockThrottle.reset()
+        isDiaryLocked = false
+        diaryLastActivity = Date()
+        return true
+    }
+
+    func setDiaryPasswordEnabled(_ enabled: Bool) {
+        isDiaryPasswordEnabled = enabled
+        AppSettings.setDiaryPasswordEnabled(enabled)
+        if enabled {
+            diaryLastActivity = Date()
+        } else {
+            isDiaryLocked = false
+            AppSettings.resetDiaryIdleTimeoutMinutes()
+            diaryIdleTimeoutMinutes = AppSettings.diaryIdleTimeoutMinutes
+        }
+    }
+
+    func updateDiaryIdleTimeout(minutes: Int) {
+        diaryIdleTimeoutMinutes = minutes
+        AppSettings.setDiaryIdleTimeoutMinutes(minutes)
+        checkDiaryIdleLock()
+    }
+
+    deinit {
+        if let diaryActivityMonitor { NSEvent.removeMonitor(diaryActivityMonitor) }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        diaryNotificationTokens.forEach { workspaceCenter.removeObserver($0) }
+        diaryNotificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        diaryDistributedNotificationTokens.forEach { DistributedNotificationCenter.default().removeObserver($0) }
     }
 
     /// 更新 archivedYears 并持久化。Q01：经由 AppSettings 写入（可注入 defaults）。
@@ -256,6 +388,7 @@ final class AppState: ObservableObject {
     }
 
     func enrichEntryMetadataIfNeeded(_ entryId: UUID) {
+        guard !DevelopmentPreview.isEnabled else { return }
         guard !isRescueMode else { return }
         guard AppSettings.metadataEnabled else { return }
         Task {
@@ -277,6 +410,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshRemindersForToday(force: Bool = false) {
+        guard !DevelopmentPreview.isEnabled else { return }
         guard AppSettings.reminderEnabled else { return }
         let times = Self.reminderTimesFromDefaults()
         Task {

@@ -56,7 +56,27 @@ extension Board {
 
 extension DayNote {
     public enum Columns: String, ColumnExpression {
-        case date, rawSummary, poeticLine, generatedBy, createdAt
+        case date, rawSummary, poeticLine, generatedBy, mood, moodCleared, createdAt
+    }
+
+    public init(row: Row) throws {
+        date = row[Columns.date]
+        rawSummary = row[Columns.rawSummary]
+        poeticLine = row[Columns.poeticLine]
+        generatedBy = row[Columns.generatedBy]
+        mood = row[Columns.mood]
+        moodCleared = row[Columns.moodCleared] ?? false
+        createdAt = row[Columns.createdAt]
+    }
+
+    public func encode(to container: inout PersistenceContainer) throws {
+        container[Columns.date] = date
+        container[Columns.rawSummary] = rawSummary
+        container[Columns.poeticLine] = poeticLine
+        container[Columns.generatedBy] = generatedBy
+        container[Columns.mood] = mood
+        container[Columns.moodCleared] = moodCleared
+        container[Columns.createdAt] = createdAt
     }
 }
 

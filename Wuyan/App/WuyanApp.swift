@@ -3,6 +3,8 @@ import SwiftUI
 extension Notification.Name {
     /// 应用即将退出，各组件应立即 flush 未保存数据
     static let wuyanWillTerminate = Notification.Name("wuyanWillTerminate")
+    /// 日记锁先遮挡根视图，再让编辑器保存可恢复草稿。
+    static let wuyanDiaryLockRequested = Notification.Name("wuyanDiaryLockRequested")
 }
 
 /// B08：macOS 26/27 的 SwiftUI 缺陷——WindowGroup 应用收到 reopen（点击 Dock 图标）时：
@@ -48,6 +50,19 @@ struct WuyanApp: App {
     init() {
         WuyanFont.registerBundledFonts()
 
+        #if DEBUG
+        if DevelopmentPreview.isEnabled {
+            do {
+                let state = try DevelopmentPreview.makeState()
+                _appState = StateObject(wrappedValue: state)
+            } catch {
+                // Fail closed: a preview must never fall back to the user's database.
+                fatalError("开发预览初始化失败：\(error)")
+            }
+            return
+        }
+        #endif
+
         // R2-3: 使用 AppMigrationRunner 替代散点迁移调用，有序/幂等/失败不崩溃
         // v1 Keychain 迁移在此执行（不需要 database）
         AppMigrationRunner.run()
@@ -78,9 +93,12 @@ struct WuyanApp: App {
         WindowGroup(id: "main") {
             RootView()
                 .environmentObject(appState)
+                .navigationSubtitle(DevelopmentPreview.isEnabled ? "开发预览 · 独立示例数据" : "")
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(ReopenWindowActionCaptor())
                 .onAppear {
+                    appState.startDiaryLockMonitoring()
+                    guard !DevelopmentPreview.isEnabled else { return }
                     // Refill the non-repeating reminder window on every launch.
                     appState.refreshRemindersForToday(force: true)
                     // 启动后 10 秒自动同步（UI-07：救援模式下禁用同步）
@@ -94,9 +112,13 @@ struct WuyanApp: App {
                 // NSWorkspace posts wake events through its own notification center;
                 // subscribing to NotificationCenter.default can miss the event.
                 .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+                    guard !DevelopmentPreview.isEnabled else { return }
                     appState.refreshRemindersForToday(force: true)
                     // 系统从睡眠恢复后自动同步
                     appState.syncCoordinator.handleWakeFromSleep()
+                }
+                .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
+                    appState.checkDiaryIdleLock()
                 }
         }
         .commands {

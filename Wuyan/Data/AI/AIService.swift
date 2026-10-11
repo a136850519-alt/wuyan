@@ -9,6 +9,7 @@ final class AIService: PoeticGenerator {
 
     var provider: AIProvider?
     var isEnabled: Bool
+    var moodForDay: ((String) throws -> Int?)?
     var ritualPolishingEnabled: Bool
     /// 标记为「禁止云端 AI」的板块；云端 provider 下，凡涉及这些板块内容的请求一律拦截。
     var cloudBlockedBoardIds: Set<UUID> = []
@@ -67,45 +68,54 @@ final class AIService: PoeticGenerator {
 
     func writingPrompt(context: WritingContext) async throws -> String {
         guard isEnabled, let provider else { throw AIError.disabled }
-        let safeEntries = filterCloudAllowed(context.recentEntries)
-        guard context.recentEntries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
-            throw AIError.blockedBySensitiveBoard
-        }
-        let recent = Self.boundedEntries(
-            safeEntries,
-            maxEntries: 5,
-            maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
-            maxCharacters: Self.cloudContextMaxCharacters
-        ).map { $0.body }.joined(separator: "\n")
-        do {
-            return try await provider.complete([
-                AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
-                AIMessage(role: .user, content: "最近内容：\n\(recent)")
-            ], options: AIOptions(temperature: 0.8, maxTokens: 300))
-        } catch {
-            WuyanLog.ai.error("写作引导请求失败：\(error.localizedDescription)")
-            throw error
-        }
+        return try await provider.complete(writingMessages(context: context), options: AIOptions(temperature: 0.8, maxTokens: 300))
     }
 
     func streamWritingPrompt(context: WritingContext) -> AsyncThrowingStream<String, Error> {
-        guard isEnabled, let provider else {
-            return AsyncThrowingStream { $0.finish(throwing: AIError.disabled) }
+        guard isEnabled, let provider else { return AsyncThrowingStream { $0.finish(throwing: AIError.disabled) } }
+        do { return provider.stream(try writingMessages(context: context), options: AIOptions(temperature: 0.8, maxTokens: 300)) }
+        catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
+    }
+
+    /// 普通与流式入口共享同一板块、隐私及长度边界。
+    private func writingMessages(context: WritingContext) throws -> [AIMessage] {
+        if requiresCloudConsent, let id = context.boardId, cloudBlockedBoardIds.contains(id) {
+            throw AIError.blockedBySensitiveBoard
         }
-        let safeEntries = filterCloudAllowed(context.recentEntries)
-        guard context.recentEntries.isEmpty || !requiresCloudConsent || !safeEntries.isEmpty else {
-            return AsyncThrowingStream { $0.finish(throwing: AIError.blockedBySensitiveBoard) }
+        var source = context.recentEntries.filter { context.boardId == nil || $0.boardId == context.boardId }
+        let draft = context.draft.flatMap { item in context.boardId == nil || item.boardId == context.boardId ? item : nil }
+        if let draft { source.removeAll { $0.id == draft.id } }
+        let safe = filterCloudAllowed(source)
+        if requiresCloudConsent, !source.isEmpty, safe.isEmpty { throw AIError.blockedBySensitiveBoard }
+        let safeDraft = draft.flatMap { filterCloudAllowed([$0]).first }
+        let draftText = safeDraft.map { String($0.body.prefix(Self.cloudContextMaxCharactersPerEntry)) } ?? ""
+        let recent = Self.boundedEntries(safe, maxEntries: safeDraft == nil ? 5 : 4,
+                                        maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
+                                        maxCharacters: Self.cloudContextMaxCharacters - draftText.count)
+        let dayKey = DayKey.string(from: context.date)
+        let hasPreviousAnniversary = recent.contains { $0.dayDate < dayKey && $0.dayDate.suffix(5) == dayKey.suffix(5) }
+        let direction: String
+        switch context.boardKind {
+        case .growth:
+            direction = "关注孩子原话、尝试与亲子时刻。年度年龄：\(context.annualAge ?? "生日未设置，不猜岁数")。"
+        case .fiveYear:
+            direction = hasPreviousAnniversary ? "简短留存，可对照提供的往年同日内容。" : "简短留存。没有往年同日记录，只提当日问题，不编造对照。"
+        case .freeform:
+            direction = "关注具体片段、情绪与自我表达，不强求总结或正能量。"
+        case .none:
+            direction = "结合板块名称与已有内容提开放式问题，不假定为成长或五年板块。"
         }
-        let recent = Self.boundedEntries(
-            safeEntries,
-            maxEntries: 5,
-            maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
-            maxCharacters: Self.cloudContextMaxCharacters
-        ).map { $0.body }.joined(separator: "\n")
-        return provider.stream([
-            AIMessage(role: .system, content: "生成 1 到 3 个开放式中文日记引导问题，温和、不评判。"),
-            AIMessage(role: .user, content: "最近内容：\n\(recent)")
-        ], options: AIOptions(temperature: 0.8, maxTokens: 300))
+        return [
+            AIMessage(role: .system, content: "生成恰好两个简短、开放式中文日记引导问题，每行一个。温和、不评判，不虚构经历。\(direction)"),
+            AIMessage(role: .user, content: """
+                板块：\(String((context.boardName ?? "当前板块").prefix(120)))
+                所属日：\(dayKey)
+                天气：\(context.weather?.condition ?? "未记录")；心情：\(Mood.from(context.mood)?.label ?? "未记录")
+                当前草稿：\(draftText)
+                本板块已有内容：
+                \(recent.map { "[\($0.dayDate)] \($0.body)" }.joined(separator: "\n"))
+                """)
+        ]
     }
 
     func streamSummary(entries: [Entry], period: Period) -> AsyncThrowingStream<String, Error> {
@@ -142,9 +152,14 @@ final class AIService: PoeticGenerator {
     }
 
     func analyzeMood(entries: [Entry]) async throws -> MoodTrend {
-        let moods = entries.compactMap(\.mood)
+        let groups = Dictionary(grouping: entries.filter { !$0.deleted }, by: \.dayDate)
+        let moods = try groups.compactMap { day, entries -> Int? in
+            if let moodForDay { return try moodForDay(day) }
+            let values = Set(entries.compactMap { Mood.from($0.mood)?.rawValue })
+            return values.count == 1 ? values.first : nil
+        }
         let score = moods.isEmpty ? 0 : Double(moods.reduce(0, +)) / Double(moods.count)
-        return MoodTrend(summary: "平均情绪 \(String(format: "%.1f", score)) / 5", score: score)
+        return MoodTrend(summary: "按天统计 · 平均情绪 \(String(format: "%.1f", score)) / 5", score: score)
     }
 
     func suggestTitle(_ entry: Entry) async throws -> String {

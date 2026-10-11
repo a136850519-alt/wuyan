@@ -7,6 +7,8 @@ enum SecureSettingKey {
     static let claudeAPIKey = "settings.claude.apiKey"
     static let syncPassphrase = "sync.passphrase"
     static let legacySyncPassphrase = "settings.crypto.passphrase"
+    static let diaryPasswordHash = "diary.lock.passwordHash"
+    static let diaryPasswordSalt = "diary.lock.passwordSalt"
 
     /// 所有需要存入 Keychain 的 key（含 legacy），用于一次性迁移。
     static let allKeysForMigration: [String] = [
@@ -70,6 +72,12 @@ enum SecureSettings {
         }
 
         return ""
+    }
+
+    /// 日记锁凭据只允许走钥匙串。不能回退到 UserDefaults，否则钥匙串暂时不可读
+    /// 时会被误判为「未启用」并放行正文。
+    static func loadKeychainOnly(_ key: String) -> Keychain.ReadResult {
+        keychain.readString(for: key)
     }
 
     @discardableResult

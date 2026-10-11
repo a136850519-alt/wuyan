@@ -5,12 +5,21 @@ struct Keychain {
     static let service = "com.wuyan.app"
     static let testService = "com.wuyan.tests"
     private let serviceName: String
+    private let readOverride: ((String) -> ReadResult)?
 
-    init(service: String = Keychain.service) {
+    init(service: String = Keychain.service, readOverride: ((String) -> ReadResult)? = nil) {
         self.serviceName = service
+        self.readOverride = readOverride
     }
 
-    func string(for account: String) -> String? {
+    enum ReadResult {
+        case value(String)
+        case missing
+        case unavailable(OSStatus)
+    }
+
+    func readString(for account: String) -> ReadResult {
+        if let readOverride { return readOverride(account) }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
@@ -20,8 +29,17 @@ struct Keychain {
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess, let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return .unavailable(status)
+        }
+        return .value(value)
+    }
+
+    func string(for account: String) -> String? {
+        if case let .value(value) = readString(for: account) { return value }
+        return nil
     }
 
     /// R0-6: setString 现在返回是否成功，避免静默丢失凭据。

@@ -18,6 +18,37 @@ struct Manifest: Codable, Equatable {
     /// V3-15：已过保留期、被移出 entries 的删除记录。只含 id 与删除时间，永久保留。
     /// Optional 以兼容旧版 manifest；空数组保存时会归一化为 nil。
     var purged: [PurgedEntry]?
+    /// 写入日札新字段前声明协议能力，旧客户端遇到未知能力时不得继续推送。
+    var requiredFeatures: [String] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, revision, boards, daynotes, entries, crypto, migration, purged, requiredFeatures
+    }
+
+    init(schemaVersion: Int = 2, revision: String? = nil, boards: [Board] = [], daynotes: [ManifestDayNote] = [], entries: [ManifestEntry] = [], crypto: CryptoManifestHeader? = nil, migration: RemoteMigrationState? = nil, purged: [PurgedEntry]? = nil, requiredFeatures: [String] = []) {
+        self.schemaVersion = schemaVersion
+        self.revision = revision
+        self.boards = boards
+        self.daynotes = daynotes
+        self.entries = entries
+        self.crypto = crypto
+        self.migration = migration
+        self.purged = purged
+        self.requiredFeatures = requiredFeatures
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 2
+        revision = try c.decodeIfPresent(String.self, forKey: .revision)
+        boards = try c.decodeIfPresent([Board].self, forKey: .boards) ?? []
+        daynotes = try c.decodeIfPresent([ManifestDayNote].self, forKey: .daynotes) ?? []
+        entries = try c.decodeIfPresent([ManifestEntry].self, forKey: .entries) ?? []
+        crypto = try c.decodeIfPresent(CryptoManifestHeader.self, forKey: .crypto)
+        migration = try c.decodeIfPresent(RemoteMigrationState.self, forKey: .migration)
+        purged = try c.decodeIfPresent([PurgedEntry].self, forKey: .purged)
+        requiredFeatures = try c.decodeIfPresent([String].self, forKey: .requiredFeatures) ?? []
+    }
 }
 
 /// V3-15：永久清除记录，不携带正文或媒体信息。

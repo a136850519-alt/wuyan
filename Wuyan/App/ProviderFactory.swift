@@ -44,6 +44,9 @@ enum ProviderFactory {
     }
 
     static func makeRemoteStorageProvider() throws -> any RemoteStorageProvider {
+        guard !DevelopmentPreview.isEnabled else {
+            throw RemoteStorageError.missingConfiguration("开发预览使用独立示例数据，云端同步未启用")
+        }
         let backend = AppSettings.storageBackend
         if backend == "s3" {
             guard let endpoint = URL(string: AppSettings.s3Endpoint) else {

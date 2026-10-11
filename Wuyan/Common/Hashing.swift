@@ -18,7 +18,9 @@ public enum Hashing {
             date: note.date,
             rawSummary: note.rawSummary.trimmingCharacters(in: .whitespacesAndNewlines),
             poeticLine: note.poeticLine.trimmingCharacters(in: .whitespacesAndNewlines),
-            generatedBy: note.generatedBy?.trimmingCharacters(in: .whitespacesAndNewlines)
+            generatedBy: note.generatedBy?.trimmingCharacters(in: .whitespacesAndNewlines),
+            mood: note.mood,
+            moodCleared: note.moodCleared ? true : nil
         )
         let data = (try? JSONEncoder.wuyan.encode(payload)) ?? Data()
         let digest = SHA256.hash(data: data)
@@ -95,4 +97,7 @@ private struct DayNoteHashPayload: Codable {
     var rawSummary: String
     var poeticLine: String
     var generatedBy: String?
+    var mood: Int?
+    /// Optional preserves the pre-v17 hash for notes without a mood or clear marker.
+    var moodCleared: Bool?
 }

@@ -72,7 +72,26 @@ enum EditorBodyFont {
 
 @MainActor
 final class RichTextEditorController: ObservableObject {
-    fileprivate weak var textView: NSTextView?
+    weak var textView: NSTextView?
+    private weak var coordinator: RichTextEditor.Coordinator?
+
+    fileprivate func attach(coordinator: RichTextEditor.Coordinator) {
+        self.coordinator = coordinator
+    }
+
+    /// 取消延迟任务并立即把当前 NSTextView 的 RTFD 写回绑定，供切换条目、
+    /// 锁定和退出等生命周期边界调用。
+    func commitPendingRTF() {
+        coordinator?.commitPendingRTF()
+    }
+
+    func insertOutline(_ prompt: String) {
+        guard let textView else { return }
+        let insertion = NSRange(location: textView.selectedRange().location, length: 0)
+        textView.window?.makeFirstResponder(textView)
+        textView.insertText("\n" + prompt + "\n", replacementRange: insertion)
+        textView.undoManager?.setActionName("插入写作提纲")
+    }
 
     func applyFontSize(_ size: CGFloat) {
         guard let textView else { return }
@@ -135,6 +154,7 @@ struct RichTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var rtfData: Data?
     var controller: RichTextEditorController
+    var identity: UUID?
     var onImagePasted: ((NSImage) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
@@ -165,6 +185,8 @@ struct RichTextEditor: NSViewRepresentable {
         textView.font = EditorBodyFont.nsFont(size: 18)
         textView.typingAttributes[.font] = textView.font
         controller.textView = textView
+        controller.attach(coordinator: context.coordinator)
+        context.coordinator.identity = identity
         context.coordinator.load(textView: textView, text: text, rtfData: rtfData)
         return scrollView
     }
@@ -174,14 +196,17 @@ struct RichTextEditor: NSViewRepresentable {
         (textView as? WuyanTextView)?.onImagePasted = onImagePasted
         controller.textView = textView
         context.coordinator.parent = self
+        context.coordinator.identity = identity
         context.coordinator.loadIfNeeded(textView: textView, text: text, rtfData: rtfData)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: RichTextEditor
+        weak var textView: NSTextView?
         private var lastRTFData: Data?
         private var isApplyingExternalValue = false
         private var pendingRTFSerialization: DispatchWorkItem?
+        fileprivate var identity: UUID?
 
         init(_ parent: RichTextEditor) {
             self.parent = parent
@@ -196,9 +221,11 @@ struct RichTextEditor: NSViewRepresentable {
             // archive until typing pauses briefly.
             pendingRTFSerialization?.cancel()
             lastRTFData = parent.rtfData
+            let scheduledIdentity = identity
             var work: DispatchWorkItem?
             work = DispatchWorkItem { [weak self, weak textView] in
                 guard let self, let textView, let work, !work.isCancelled else { return }
+                guard self.identity == scheduledIdentity else { return }
                 let data = Self.rtfData(from: textView)
                 self.lastRTFData = data
                 self.parent.rtfData = data
@@ -219,7 +246,17 @@ struct RichTextEditor: NSViewRepresentable {
             }
         }
 
+        fileprivate func commitPendingRTF() {
+            pendingRTFSerialization?.cancel()
+            pendingRTFSerialization = nil
+            guard let textView, !isApplyingExternalValue else { return }
+            let data = Self.rtfData(from: textView)
+            lastRTFData = data
+            parent.rtfData = data
+        }
+
         func load(textView: NSTextView, text: String, rtfData: Data?) {
+            self.textView = textView
             isApplyingExternalValue = true
             // 切换条目前清空撤销栈，防止跨条目 ⌘Z 串档
             textView.undoManager?.removeAllActions()
@@ -245,14 +282,19 @@ struct RichTextEditor: NSViewRepresentable {
             }
 
             let font = EditorBodyFont.nsFont(size: 18)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 8
+            paragraph.paragraphSpacing = 0
             let attributed = NSAttributedString(
                 string: text,
                 attributes: [
                     .font: font,
-                    .foregroundColor: NSColor.labelColor
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraph
                 ]
             )
             textView.textStorage?.setAttributedString(attributed)
+            textView.typingAttributes[.paragraphStyle] = paragraph
             lastRTFData = Self.rtfData(from: textView)
         }
 

@@ -16,6 +16,7 @@ final class TimelineViewModel: ObservableObject {
 
     func observe(appState: AppState) {
         observationTask?.cancel()
+        clearSearch()
         let filter: TimelineFilter
         switch appState.sidebarSelection {
         case .all:
@@ -44,6 +45,7 @@ final class TimelineViewModel: ObservableObject {
             // are database updates and must preserve the user's current row.
             var isFirstEmission = true
             for await newSummaries in appState.entries.observeTimelineSummaries(filter: filter) {
+                guard !Task.isCancelled else { return }
                 self.summaries = newSummaries
                 if let selected = appState.selectedEntryId,
                    !newSummaries.contains(where: { $0.id == selected }) {
@@ -79,7 +81,15 @@ final class TimelineViewModel: ObservableObject {
         }
         isSearching = true
         do {
-            let results = try appState.entries.search(EntrySearchQuery(term: trimmed))
+            let results = try appState.entries.search(EntrySearchQuery(term: trimmed, boardId: appState.sidebarSelection.boardId)).filter { result in
+                switch appState.sidebarSelection {
+                case .favorites: return result.entry.isFavorite
+                case .drafts: return result.entry.isDraft
+                case let .year(year), let .yearBoard(year, _): return result.entry.dayDate.hasPrefix(String(year) + "-")
+                case .todayInHistory: return result.entry.dayDate.suffix(5) == DayKey.today.suffix(5) && result.entry.dayDate.prefix(4) != DayKey.today.prefix(4)
+                default: return true
+                }
+            }
             // UI-08③：数据库错误明确报出，不再 try? 伪装成「无结果」
             searchError = nil
             searchResults = results.map { result in

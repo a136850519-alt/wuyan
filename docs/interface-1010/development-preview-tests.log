@@ -1,0 +1,331 @@
+Building for debugging...
+[Planning 105 / 184]
+[Planning deferred tasks]
+[6 / 18]
+[7 / 19] Wuyan
+[12 / 24] Wuyan
+[21 / 26] WuyanTests-product
+[36 / 41] WuyanTests-product
+/Volumes/AI小屋/晤言/WuyanTests/ReminderSchedulerTests.swift:16:9: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+14 |     @Test("expected reminder IDs handle month rollover")
+15 |     func monthRollover() throws {
+16 |         try TestIsolation.withIsolatedDefaults { defaults in
+   |         `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+17 |             defaults.set(false, forKey: SettingKey.reminderSkipWrittenDays)
+18 |             let now = localDate(2026, 1, 31, 20, 0)
+
+/Volumes/AI小屋/晤言/WuyanTests/ReminderSchedulerTests.swift:32:9: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+30 |     @Test("expected reminder IDs exclude passed times")
+31 |     func passedTime() throws {
+32 |         try TestIsolation.withIsolatedDefaults { defaults in
+   |         `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+33 |             defaults.set(false, forKey: SettingKey.reminderSkipWrittenDays)
+34 |             let now = localDate(2026, 1, 31, 22, 0)
+
+/Volumes/AI小屋/晤言/WuyanTests/ReminderSchedulerTests.swift:48:9: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+46 |     @Test("expected reminder IDs exclude today after writing")
+47 |     func skipWrittenToday() throws {
+48 |         try TestIsolation.withIsolatedDefaults { defaults in
+   |         `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+49 |             defaults.set(true, forKey: SettingKey.reminderSkipWrittenDays)
+50 |             let now = localDate(2026, 1, 31, 20, 0)
+
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+/Volumes/AI小屋/晤言/WuyanTests/C01C02C03RegressionTests.swift:337:9: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+335 |     @Test("Unified container routes SecureSettings to test keychain")
+336 |     func unifiedContainerUsesTestKeychain() throws {
+337 |         try TestIsolation.withIsolatedDefaults { _ in
+    |         `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+338 |             let key = SecureSettingKey.zhipuAPIKey
+339 |             let value = "isolated-\(UUID().uuidString.prefix(8))"
+
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[38 / 41] WuyanTests-product
+[40 / 44] WuyanTests-product
+Build complete! (3.61秒)
+Test Suite 'All tests' started at 2026-10-10 23:47:10.525.
+Test Suite 'All tests' passed at 2026-10-10 23:47:10.526.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "1010 data and interface rules" started.
+◇ Suite "Timeline selection" started.
+◇ Suite GlobalStateSuite started.
+◇ Suite "Rich text image paste" started.
+◇ Test "摘要保持每篇板块身份，AI 在 LIMIT 之前过滤板块并排除富文本" started.
+◇ Test "旧心情冲突不随机取值，日级确认后筛选一致且原始值保留" started.
+◇ Suite "1010 AI request lifecycle" started.
+◇ Test "天气覆盖雷雨冰雹冻雨雪雾未知，非法温度不得部分保存" started.
+◇ Test "旧 JSON 缺心情兼容且 nil 哈希不改变旧同步指纹" started.
+◇ Suite StreakTrackerRegressionTests started.
+◇ Test "旧条目冲突恢复不得回滚当日新心情" started.
+◇ Suite "AI context bounds" started.
+◇ Suite "C01: Delayed GC object identity" started.
+◇ Test "连续天数：连续三天计 3" started.
+◇ Test "连续天数：草稿不计入（UI-09①）" started.
+◇ Test "筛选变化后首次结果选择新列表第一项" started.
+◇ Test "年度年龄使用目标年份，出生前和未设置生日有明确结果" started.
+◇ Test "情绪趋势每一天只占一次权重，按日级值覆盖旧投影" started.
+◇ Test "最长连续：跨断档取最大段" started.
+◇ Test "空数据返回 0" started.
+◇ Test "连续天数：今天未写从昨天起算" started.
+◇ Test "连续天数：断档截断" started.
+◇ Test "旧库增量升级保留原文与历史心情，关闭后重新打开仍有共享值" started.
+◇ Test "写作引导最多使用五篇最近条目" started.
+◇ Test "云端问答只发送有界上下文且不建立嵌入索引" started.
+◇ Test "普通和流式写作建议使用同一草稿、板块、年度年龄与字符边界" started.
+◇ Test "非回环 Ollama 不发送正文到嵌入服务" started.
+◇ Test "旧请求忽略取消并晚返回时，也不能覆盖新结果" started.
+◇ Test "图片粘贴缩放到 720 像素以内" started.
+◇ Test "本地语义检索接收超过八篇候选" started.
+◇ Test "Aged delayed GC preserves concurrently restored object" started.
+✔ Test "旧 JSON 缺心情兼容且 nil 哈希不改变旧同步指纹" passed after 0.004 seconds.
+✔ Test "空数据返回 0" passed after 0.004 seconds.
+✔ Test "年度年龄使用目标年份，出生前和未设置生日有明确结果" passed after 0.004 seconds.
+✔ Test "连续天数：草稿不计入（UI-09①）" passed after 0.004 seconds.
+✔ Test "连续天数：断档截断" passed after 0.004 seconds.
+✔ Test "连续天数：连续三天计 3" passed after 0.004 seconds.
+✔ Test "最长连续：跨断档取最大段" passed after 0.004 seconds.
+✔ Test "连续天数：今天未写从昨天起算" passed after 0.004 seconds.
+✔ Suite StreakTrackerRegressionTests passed after 0.004 seconds.
+✔ Test "非回环 Ollama 不发送正文到嵌入服务" passed after 0.005 seconds.
+✔ Test "本地语义检索接收超过八篇候选" passed after 0.007 seconds.
+✔ Test "写作引导最多使用五篇最近条目" passed after 0.011 seconds.
+✔ Test "普通和流式写作建议使用同一草稿、板块、年度年龄与字符边界" passed after 0.011 seconds.
+✔ Test "情绪趋势每一天只占一次权重，按日级值覆盖旧投影" passed after 0.016 seconds.
+✔ Test "旧条目冲突恢复不得回滚当日新心情" passed after 0.016 seconds.
+✔ Test "旧心情冲突不随机取值，日级确认后筛选一致且原始值保留" passed after 0.018 seconds.
+✔ Test "天气覆盖雷雨冰雹冻雨雪雾未知，非法温度不得部分保存" passed after 0.018 seconds.
+✔ Test "旧请求忽略取消并晚返回时，也不能覆盖新结果" passed after 0.018 seconds.
+✔ Suite "1010 AI request lifecycle" passed after 0.018 seconds.
+✔ Test "旧库增量升级保留原文与历史心情，关闭后重新打开仍有共享值" passed after 0.023 seconds.
+✔ Test "摘要保持每篇板块身份，AI 在 LIMIT 之前过滤板块并排除富文本" passed after 0.024 seconds.
+✔ Suite "1010 data and interface rules" passed after 0.024 seconds.
+✔ Test "云端问答只发送有界上下文且不建立嵌入索引" passed after 0.032 seconds.
+✔ Suite "AI context bounds" passed after 0.032 seconds.
+✔ Test "Aged delayed GC preserves concurrently restored object" passed after 0.035 seconds.
+◇ Test "Missing-object audit repairs current object on next sync" started.
+✔ Test "筛选变化后首次结果选择新列表第一项" passed after 0.042 seconds.
+✔ Suite "Timeline selection" passed after 0.042 seconds.
+✔ Test "Missing-object audit repairs current object on next sync" passed after 0.009 seconds.
+◇ Test "Restored day note pushes to never-reused path" started.
+✔ Test "Restored day note pushes to never-reused path" passed after 0.012 seconds.
+✔ Suite "C01: Delayed GC object identity" passed after 0.057 seconds.
+◇ Suite "C02: Remote-persisted crypto migration state" started.
+◇ Test "Another device completes interrupted media encryption" started.
+✔ Test "图片粘贴缩放到 720 像素以内" passed after 0.058 seconds.
+✔ Suite "Rich text image paste" passed after 0.058 seconds.
+✔ Test "Another device completes interrupted media encryption" passed after 0.107 seconds.
+✔ Suite "C02: Remote-persisted crypto migration state" passed after 0.107 seconds.
+◇ Suite "C03: Unified test isolation for AppState construction" started.
+◇ Test "Rescue mode does not run media migration" started.
+✔ Test "Rescue mode does not run media migration" passed after 0.006 seconds.
+◇ Test "AppState construction moves sentinel only inside injected containers" started.
+✔ Test "AppState construction moves sentinel only inside injected containers" passed after 0.007 seconds.
+◇ Test "Unified container routes SecureSettings to test keychain" started.
+✔ Test "Unified container routes SecureSettings to test keychain" passed after 0.013 seconds.
+✔ Suite "C03: Unified test isolation for AppState construction" passed after 0.027 seconds.
+◇ Suite Interface1010SnapshotTests started.
+➜ Test nativeLayoutSnapshots() skipped.
+✔ Suite Interface1010SnapshotTests passed after 0.001 seconds.
+◇ Suite Interface1010IntegrationTests started.
+◇ Test "两设备同步共享心情，并保留并发日札的心情副本" started.
+✔ Test "两设备同步共享心情，并保留并发日札的心情副本" passed after 0.023 seconds.
+◇ Test "一句话无默认心情，跳过与生成保存，旧编辑器不会回写过期心情" started.
+✔ Test "一句话无默认心情，跳过与生成保存，旧编辑器不会回写过期心情" passed after 0.016 seconds.
+◇ Test "提纲在光标处插入而不替换选中文本，保留富文本并支持撤销" started.
+✔ Test "提纲在光标处插入而不替换选中文本，保留富文本并支持撤销" passed after 0.059 seconds.
+◇ Test "天气保存不会把并发正文变化当成旧草稿可覆盖的基线" started.
+✔ Test "天气保存不会把并发正文变化当成旧草稿可覆盖的基线" passed after 0.014 seconds.
+✔ Suite Interface1010IntegrationTests passed after 0.114 seconds.
+◇ Suite "R4-01: Missing-object audit repairs thumbnails independently" started.
+◇ Test "Thumbnail-only loss is repaired in plaintext mode" started.
+✔ Test "Thumbnail-only loss is repaired in plaintext mode" passed after 0.014 seconds.
+◇ Test "Thumbnail-only loss is repaired in encrypted mode" started.
+✔ Test "Thumbnail-only loss is repaired in encrypted mode" passed after 0.072 seconds.
+◇ Test "Original and thumbnail missing together are still repaired" started.
+✔ Test "Original and thumbnail missing together are still repaired" passed after 0.012 seconds.
+◇ Test "Thumbnail-only local cache still repairs remote thumbnail" started.
+✔ Test "Thumbnail-only local cache still repairs remote thumbnail" passed after 0.011 seconds.
+✔ Suite "R4-01: Missing-object audit repairs thumbnails independently" passed after 0.111 seconds.
+◇ Suite "Reminder scheduler" started.
+◇ Test "expected reminder IDs handle month rollover" started.
+✔ Test "expected reminder IDs handle month rollover" passed after 0.001 seconds.
+◇ Test "expected reminder IDs exclude passed times" started.
+✔ Test "expected reminder IDs exclude passed times" passed after 0.001 seconds.
+◇ Test "expected reminder IDs exclude today after writing" started.
+✔ Test "expected reminder IDs exclude today after writing" passed after 0.001 seconds.
+✔ Suite "Reminder scheduler" passed after 0.003 seconds.
+◇ Suite "Review repro" started.
+◇ Test "R1 归档不会用旧本地版本覆盖远端" started.
+✔ Test "R1 归档不会用旧本地版本覆盖远端" passed after 0.018 seconds.
+◇ Test "R2 pullYear 保留本地 dirty 编辑" started.
+✔ Test "R2 pullYear 保留本地 dirty 编辑" passed after 0.008 seconds.
+◇ Test "R3 拉取期间保存的输入进入冲突副本" started.
+✔ Test "R3 拉取期间保存的输入进入冲突副本" passed after 0.019 seconds.
+◇ Test "R4 带旧版本保存不能复活已移除条目" started.
+✔ Test "R4 带旧版本保存不能复活已移除条目" passed after 0.005 seconds.
+◇ Test "R5 WebDAV list 归一化 base path" started.
+✔ Test "R5 WebDAV list 归一化 base path" passed after 0.003 seconds.
+✔ Suite "Review repro" passed after 0.056 seconds.
+◇ Suite EditorExternalUpdateRegressionTests started.
+◇ Test "无未保存修改：外部改写静默应用到编辑器" started.
+✔ Test "无未保存修改：外部改写静默应用到编辑器" passed after 0.030 seconds.
+◇ Test "有未保存修改：暂停自动保存并亮横幅，不弹全局错误" started.
+✔ Test "有未保存修改：暂停自动保存并亮横幅，不弹全局错误" passed after 0.033 seconds.
+◇ Test "「以我的编辑为准」：在最新底稿上保存，保留外部天气，清除横幅" started.
+✔ Test "「以我的编辑为准」：在最新底稿上保存，保留外部天气，清除横幅" passed after 0.035 seconds.
+◇ Test "「重新载入」：放弃未保存修改，以数据库版本为准" started.
+✔ Test "「重新载入」：放弃未保存修改，以数据库版本为准" passed after 0.033 seconds.
+◇ Test "条目被移除后未保存输入另存为独立新日记" started.
+✔ Test "条目被移除后未保存输入另存为独立新日记" passed after 0.011 seconds.
+✔ Suite EditorExternalUpdateRegressionTests passed after 0.144 seconds.
+◇ Suite "V3-06: Crypto downgrade protection" started.
+◇ Test "加密后远端对象被替换为明文时拒绝拉取" started.
+✔ Test "加密后远端对象被替换为明文时拒绝拉取" passed after 0.109 seconds.
+◇ Test "加密后远端 manifest 被替换为明文时拒绝写回" started.
+✔ Test "加密后远端 manifest 被替换为明文时拒绝写回" passed after 0.068 seconds.
+✔ Suite "V3-06: Crypto downgrade protection" passed after 0.177 seconds.
+◇ Suite "V3-15: Permanent purge records" started.
+◇ Test "expired deletion moves a clean offline copy to trash without PUT" started.
+✔ Test "expired deletion moves a clean offline copy to trash without PUT" passed after 0.022 seconds.
+◇ Test "offline edits are preserved as a conflict before purge" started.
+✔ Test "offline edits are preserved as a conflict before purge" passed after 0.021 seconds.
+◇ Test "restoring a purged entry explicitly republishes it" started.
+✔ Test "restoring a purged entry explicitly republishes it" passed after 0.025 seconds.
+◇ Test "local purge table repairs a purged field lost by an old client" started.
+✔ Test "local purge table repairs a purged field lost by an old client" passed after 0.013 seconds.
+◇ Test "purged-only manifest is not mistaken for an empty backend" started.
+✔ Test "purged-only manifest is not mistaken for an empty backend" passed after 0.008 seconds.
+◇ Test "revision remains backward compatible without purges" started.
+✔ Test "revision remains backward compatible without purges" passed after 0.001 seconds.
+◇ Test "normalizePurges deduplicates and applies resurrection rules" started.
+✔ Test "normalizePurges deduplicates and applies resurrection rules" passed after 0.001 seconds.
+✔ Suite "V3-15: Permanent purge records" passed after 0.091 seconds.
+◇ Suite "Crypto" started.
+◇ Test "AES-GCM roundtrip" started.
+✔ Test "AES-GCM roundtrip" passed after 0.029 seconds.
+◇ Test "AES-GCM wrong key fails" started.
+✔ Test "AES-GCM wrong key fails" passed after 0.057 seconds.
+◇ Test "KDF derives consistent key" started.
+✔ Test "KDF derives consistent key" passed after 0.001 seconds.
+◇ Test "KDF different salt produces different key" started.
+✔ Test "KDF different salt produces different key" passed after 0.001 seconds.
+◇ Test "SyncCrypto roundtrip" started.
+✔ Test "SyncCrypto roundtrip" passed after 0.029 seconds.
+✔ Suite "Crypto" passed after 0.116 seconds.
+◇ Suite "Streak Tracker" started.
+◇ Test "Current streak counts consecutive days" started.
+✔ Test "Current streak counts consecutive days" passed after 0.001 seconds.
+◇ Test "Current streak with broken streak" started.
+✔ Test "Current streak with broken streak" passed after 0.001 seconds.
+◇ Test "Longest streak" started.
+✔ Test "Longest streak" passed after 0.001 seconds.
+◇ Test "Current streak with empty entries" started.
+✔ Test "Current streak with empty entries" passed after 0.001 seconds.
+✔ Suite "Streak Tracker" passed after 0.001 seconds.
+◇ Suite "AppSettings" started.
+◇ Test "SettingKey format consistency" started.
+✔ Test "SettingKey format consistency" passed after 0.001 seconds.
+◇ Test "AppSettings default values" started.
+✔ Test "AppSettings default values" passed after 0.001 seconds.
+◇ Test "AppSettings bool defaults" started.
+✔ Test "AppSettings bool defaults" passed after 0.001 seconds.
+◇ Test "旧版 onboarding key 在读取时迁移" started.
+✔ Test "旧版 onboarding key 在读取时迁移" passed after 0.001 seconds.
+✔ Suite "AppSettings" passed after 0.004 seconds.
+◇ Suite "Hashing" started.
+◇ Test "DayNote hash is stable" started.
+✔ Test "DayNote hash is stable" passed after 0.001 seconds.
+◇ Test "Entry content hash differs by body" started.
+✔ Test "Entry content hash differs by body" passed after 0.001 seconds.
+◇ Test "Entry content hash ignores tag order" started.
+✔ Test "Entry content hash ignores tag order" passed after 0.001 seconds.
+✔ Suite "Hashing" passed after 0.001 seconds.
+◇ Suite "FTS Trigram Search" started.
+◇ Test "FTS search matches Chinese substring" started.
+✔ Test "FTS search matches Chinese substring" passed after 0.006 seconds.
+◇ Test "FTS search no match" started.
+✔ Test "FTS search no match" passed after 0.005 seconds.
+✔ Suite "FTS Trigram Search" passed after 0.011 seconds.
+◇ Suite "Sync Engine" started.
+◇ Test "日札条件写入拒绝并发覆盖" started.
+✔ Test "日札条件写入拒绝并发覆盖" passed after 0.004 seconds.
+◇ Test "Conditional manifest writes reject a stale version" started.
+✔ Test "Conditional manifest writes reject a stale version" passed after 0.001 seconds.
+◇ Test "5xx throws instead of silent degrade" started.
+✔ Test "5xx throws instead of silent degrade" passed after 0.004 seconds.
+◇ Test "Pull new entry from remote" started.
+✔ Test "Pull new entry from remote" passed after 0.007 seconds.
+◇ Test "Push dirty entry to remote" started.
+✔ Test "Push dirty entry to remote" passed after 0.007 seconds.
+✔ Suite "Sync Engine" passed after 0.024 seconds.
+◇ Suite "Entry Summary" started.
+◇ Test "Entry summary from timeline" started.
+✔ Test "Entry summary from timeline" passed after 0.005 seconds.
+◇ Test "Entry summary body preview is truncated" started.
+✔ Test "Entry summary body preview is truncated" passed after 0.005 seconds.
+✔ Suite "Entry Summary" passed after 0.010 seconds.
+◇ Suite "Sync planning reads" started.
+◇ Test "同步规划可只读取活动条目 ID" started.
+✔ Test "同步规划可只读取活动条目 ID" passed after 0.004 seconds.
+✔ Suite "Sync planning reads" passed after 0.004 seconds.
+◇ Suite "Day-note conflicts" started.
+◇ Test "日札冲突副本可枚举并丢弃" started.
+✔ Test "日札冲突副本可枚举并丢弃" passed after 0.005 seconds.
+✔ Suite "Day-note conflicts" passed after 0.005 seconds.
+◇ Suite "WebDAV URL Construction" started.
+◇ Test "URL construction with base path" started.
+✔ Test "URL construction with base path" passed after 0.001 seconds.
+◇ Test "URL construction without path" started.
+✔ Test "URL construction without path" passed after 0.001 seconds.
+✔ Suite "WebDAV URL Construction" passed after 0.001 seconds.
+◇ Suite "Media Path Resolution" started.
+◇ Test "Relative path roundtrip via model computed properties" started.
+✔ Test "Relative path roundtrip via model computed properties" passed after 0.001 seconds.
+◇ Test "Resolve absolute path passes through via model" started.
+✔ Test "Resolve absolute path passes through via model" passed after 0.001 seconds.
+◇ Test "Nil paths return nil" started.
+✔ Test "Nil paths return nil" passed after 0.001 seconds.
+✔ Suite "Media Path Resolution" passed after 0.001 seconds.
+◇ Suite "MarkClean" started.
+◇ Test "markClean sets dirty to false" started.
+✔ Test "markClean sets dirty to false" passed after 0.005 seconds.
+✔ Suite "MarkClean" passed after 0.005 seconds.
+◇ Suite "Board Deduplication" started.
+◇ Test "Built-in board kinds are unique" started.
+✔ Test "Built-in board kinds are unique" passed after 0.004 seconds.
+✔ Suite "Board Deduplication" passed after 0.004 seconds.
+◇ Suite "R0-1: Sync Status Observation" started.
+◇ Test "SyncCoordinator error triggers AppState.errorMessage via onError callback" started.
+✔ Test "SyncCoordinator error triggers AppState.errorMessage via onError callback" passed after 0.006 seconds.
+✔ Suite "R0-1: Sync Status Observation" passed after 0.006 seconds.
+◇ Suite "R0-2: Archive Bookkeeping" started.
+◇ Test "Archive year adds to archivedYears; download removes it" started.
+✔ Test "Archive year adds to archivedYears; download removes it" passed after 0.006 seconds.
+◇ Test "Archived years persist to UserDefaults" started.
+✔ Test "Archived years persist to UserDefaults" passed after 0.006 seconds.
+✔ Suite "R0-2: Archive Bookkeeping" passed after 0.013 seconds.
+◇ Suite "R0-3: MarkClean Baseline" started.
+◇ Test "markClean with stale expectedHash protects newer edits" started.
+✔ Test "markClean with stale expectedHash protects newer edits" passed after 0.005 seconds.
+✔ Suite "R0-3: MarkClean Baseline" passed after 0.005 seconds.
+◇ Suite "R0-6: Keychain Migration" started.
+◇ Test "SecureSettings roundtrip uses isolated keychain in tests" started.
+✔ Test "SecureSettings roundtrip uses isolated keychain in tests" passed after 0.014 seconds.
+◇ Test "load returns value from Keychain when present" started.
+✔ Test "load returns value from Keychain when present" passed after 0.010 seconds.
+◇ Test "Keychain setString returns false on failure (not crash)" started.
+✔ Test "Keychain setString returns false on failure (not crash)" passed after 0.008 seconds.
+✔ Suite "R0-6: Keychain Migration" passed after 0.034 seconds.
+◇ Suite "R0-7: Plaintext-to-Encrypted Migration" started.
+◇ Test "decodeRaw tolerates plaintext JSON when crypto is nil" started.
+✔ Test "decodeRaw tolerates plaintext JSON when crypto is nil" passed after 0.006 seconds.
+✔ Suite "R0-7: Plaintext-to-Encrypted Migration" passed after 0.006 seconds.
+◇ Suite "R0-8: Reminder Date Consistency" started.
+◇ Test "DayKey uses 3am rule for date boundary" started.
+✔ Test "DayKey uses 3am rule for date boundary" passed after 0.001 seconds.
+✔ Suite "R0-8: Reminder Date Consistency" passed after 0.001 seconds.
+✔ Suite GlobalStateSuite passed after 1.150 seconds.
+✔ Test run with 103 tests in 37 suites passed after 1.150 seconds.

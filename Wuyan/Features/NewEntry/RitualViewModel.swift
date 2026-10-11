@@ -10,6 +10,12 @@ final class RitualViewModel: ObservableObject {
 
     @Published var step: Step = .summary
     @Published var rawSummary = ""
+    @Published var mood: Int?
+    private var moodNoteHash: String?
+    private(set) var dayKey = DayKey.today
+    private var prepared = false
+    private var dismissed = false
+    @Published var errorMessage: String?
     @Published var dayNote: DayNote?
     @Published var boards: [Board] = []
     @Published var isGenerating = false
@@ -25,65 +31,62 @@ final class RitualViewModel: ObservableObject {
     }
 
     func prepare(appState: AppState) async {
+        guard !prepared else { return }
         do {
+            dayKey = DayKey.today
             boards = try appState.boards.all()
-            if let note = try appState.dayNotes.note(on: Date()) {
-                dayNote = note
+            let note = try appState.dayNotes.note(dayKey: dayKey)
+            dayNote = note
+            rawSummary = note?.rawSummary ?? ""
+            mood = try appState.dayNotes.effectiveMood(dayKey: dayKey)
+            moodNoteHash = note.map(Hashing.dayNoteHash)
+            prepared = true
+            if let note, !note.rawSummary.isEmpty || !note.poeticLine.isEmpty {
                 step = .board
                 revealBoards()
             }
-        } catch {
-            appState.errorMessage = error.localizedDescription
-        }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func generate(appState: AppState) async {
-        guard !appState.isRescueMode else {
-            appState.errorMessage = "救援模式：新建内容已禁用。"
-            return
-        }
-        let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isGenerating, !dismissed, prepared else { return }
+        guard !appState.isRescueMode else { errorMessage = "救援模式：新建内容已禁用。"; return }
         isGenerating = true
+        defer { isGenerating = false }
+        let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedMood = mood
         let line = await appState.poeticGenerator.line(from: summary)
-        let note = DayNote(
-            rawSummary: summary,
-            poeticLine: line.isEmpty ? summary : line,
-            generatedBy: nil
-        )
-        do {
-            try appState.dayNotes.upsert(note)
-            appState.syncCoordinator.notifyEditCompleted()
-            dayNote = note
+        guard !Task.isCancelled, !dismissed else { return }
+        if save(summary: summary, line: line.isEmpty ? summary : line, mood: selectedMood, appState: appState) {
             revealPoeticLine()
-        } catch {
-            appState.errorMessage = error.localizedDescription
         }
-        isGenerating = false
     }
 
     func skip(appState: AppState) async {
-        guard !appState.isRescueMode else {
-            appState.errorMessage = "救援模式：新建内容已禁用。"
-            return
-        }
-        // “跳过” is an explicit opt-out from polishing. Persist the user's
-        // words verbatim and never call the configured (possibly cloud) AI.
+        guard !isGenerating, !dismissed, prepared else { return }
+        guard !appState.isRescueMode else { errorMessage = "救援模式：新建内容已禁用。"; return }
         let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let note = DayNote(
-            rawSummary: summary,
-            poeticLine: summary.isEmpty ? "今日留白，也算一笔。" : summary,
-            generatedBy: nil
-        )
-        do {
-            try appState.dayNotes.upsert(note)
-            appState.syncCoordinator.notifyEditCompleted()
-            dayNote = note
-            step = .board
-            revealBoards()
-        } catch {
-            appState.errorMessage = error.localizedDescription
+        if save(summary: summary, line: summary.isEmpty ? "今日留白，也算一笔。" : summary, mood: mood, appState: appState) {
+            nextToBoards()
         }
     }
+
+    private func save(summary: String, line: String, mood: Int?, appState: AppState) -> Bool {
+        let note = DayNote(date: dayKey, rawSummary: summary, poeticLine: line,
+                           generatedBy: nil, mood: mood,
+                           moodCleared: mood == nil ? (dayNote?.moodCleared ?? false) : false,
+                           createdAt: dayNote?.createdAt ?? Date())
+        do {
+            try appState.dayNotes.upsert(note, expectedHash: moodNoteHash)
+            dayNote = note
+            moodNoteHash = Hashing.dayNoteHash(note)
+            errorMessage = nil
+            appState.syncCoordinator.notifyEditCompleted()
+            return true
+        } catch { errorMessage = "保存失败，输入与心情已保留。\(error.localizedDescription)"; return false }
+    }
+
+    func close() { dismissed = true }
 
     func createEntry(board: Board, appState: AppState) {
         guard !appState.isRescueMode else {
@@ -92,7 +95,8 @@ final class RitualViewModel: ObservableObject {
         }
         guard let dayNote else { return }
         do {
-            let entry = try appState.entries.create(boardId: board.id, dayNote: dayNote)
+            let timestamp = DayKey.today == dayKey ? Date() : (DayKey.date(from: dayKey)?.addingTimeInterval(12 * 3600) ?? Date())
+            let entry = try appState.entries.create(boardId: board.id, dayNote: dayNote, journalDate: timestamp)
             appState.syncCoordinator.notifyEditCompleted()
             appState.enrichEntryMetadataIfNeeded(entry.id)
             let year = AppState.year(fromDayKey: entry.dayDate)

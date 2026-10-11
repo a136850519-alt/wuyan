@@ -22,52 +22,56 @@ struct StreakTrackerRegressionTests {
         )
     }
 
+    private var stableBase: Date {
+        Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
+    }
+
     @Test("连续天数：连续三天计 3")
     func currentStreakCountsConsecutiveDays() {
-        let base = Date()
+        let base = stableBase
         let tracker = StreakTracker(summaries: [
             summary(day: key(relativeDays: 0, from: base)),
             summary(day: key(relativeDays: -1, from: base)),
             summary(day: key(relativeDays: -2, from: base)),
         ])
-        #expect(tracker.currentStreak() == 3)
+        #expect(tracker.currentStreak(asOf: base) == 3)
     }
 
     @Test("连续天数：断档截断")
     func currentStreakStopsAtGap() {
-        let base = Date()
+        let base = stableBase
         let tracker = StreakTracker(summaries: [
             summary(day: key(relativeDays: 0, from: base)),
             // 昨天空缺
             summary(day: key(relativeDays: -2, from: base)),
         ])
-        #expect(tracker.currentStreak() == 1)
+        #expect(tracker.currentStreak(asOf: base) == 1)
     }
 
     @Test("连续天数：草稿不计入（UI-09①）")
     func currentStreakIgnoresDrafts() {
-        let base = Date()
+        let base = stableBase
         let tracker = StreakTracker(summaries: [
             summary(day: key(relativeDays: 0, from: base)),
             summary(day: key(relativeDays: 0, from: base), isDraft: true),
             summary(day: key(relativeDays: -1, from: base)),
         ])
-        #expect(tracker.currentStreak() == 2)
+        #expect(tracker.currentStreak(asOf: base) == 2)
     }
 
     @Test("连续天数：今天未写从昨天起算")
     func currentStreakStartsFromYesterdayWhenTodayMissing() {
-        let base = Date()
+        let base = stableBase
         let tracker = StreakTracker(summaries: [
             summary(day: key(relativeDays: -1, from: base)),
             summary(day: key(relativeDays: -2, from: base)),
         ])
-        #expect(tracker.currentStreak() == 2)
+        #expect(tracker.currentStreak(asOf: base) == 2)
     }
 
     @Test("最长连续：跨断档取最大段")
     func longestStreakPicksLongestRun() {
-        let base = Date()
+        let base = stableBase
         let tracker = StreakTracker(summaries: [
             summary(day: key(relativeDays: -5, from: base)),
             summary(day: key(relativeDays: -4, from: base)),
@@ -75,7 +79,7 @@ struct StreakTrackerRegressionTests {
             summary(day: key(relativeDays: -1, from: base)),
         ])
         #expect(tracker.longestStreak() == 3)
-        #expect(tracker.currentStreak() == 1)
+        #expect(tracker.currentStreak(asOf: base) == 1)
     }
 
     @Test("空数据返回 0")

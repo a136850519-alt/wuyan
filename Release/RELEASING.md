@@ -31,9 +31,20 @@ AIGC:
 
 ## 本地自编译发布
 
+首次打包前，在“钥匙串访问”中通过“证书助理 → 创建证书”创建一个固定的代码签名证书，默认名称为 `晤言 Local Signing`，证书类型选择“代码签名”。可以用下面的命令确认系统能找到它：
+
+```bash
+security find-identity -v -p codesigning
+```
+
+`build-local.sh` 只允许在干净工作区运行，并使用这个固定身份签名。需要使用其他证书名称时设置 `WUYAN_SIGNING_IDENTITY`：
+
 ```bash
 bash Release/build-local.sh
+WUYAN_SIGNING_IDENTITY="证书名称" bash Release/build-local.sh
 ```
+
+固定证书让不同构建版本保持稳定的 designated requirement，避免覆盖安装后反复请求访问钥匙串。脚本找不到证书或检测到未提交改动时会停止，不生成 DMG。
 
 产物在 `dist/` 目录：
 - `晤言.app`

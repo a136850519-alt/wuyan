@@ -6,8 +6,17 @@ struct AppCommands: Commands {
     @ObservedObject var appState: AppState
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("设置…") {
+                guard !appState.isDiaryLocked else { return }
+                appState.sidebarSelection = .settings
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+
         CommandGroup(after: .newItem) {
             Button("新建日记") {
+                guard !appState.isDiaryLocked else { return }
                 guard !appState.isRescueMode else {
                     appState.errorMessage = "救援模式：新建已禁用。"
                     return
@@ -19,16 +28,13 @@ struct AppCommands: Commands {
 
         CommandMenu("日记") {
             Button("日历") {
+                guard !appState.isDiaryLocked else { return }
                 appState.sidebarSelection = .calendar
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
 
-            Button("设置") {
-                appState.sidebarSelection = .settings
-            }
-            .keyboardShortcut(",", modifiers: .command)
-
             Button("回收站") {
+                guard !appState.isDiaryLocked else { return }
                 appState.sidebarSelection = .trash
             }
             .keyboardShortcut(.delete, modifiers: [.command, .shift])
@@ -36,11 +42,13 @@ struct AppCommands: Commands {
             Divider()
 
             Button("同步") {
+                guard !appState.isDiaryLocked else { return }
                 appState.syncNow()
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
 
             Button("删除当前条目") {
+                guard !appState.isDiaryLocked else { return }
                 appState.requestDeleteCurrentEntry()
             }
             .disabled(appState.selectedEntryId == nil)

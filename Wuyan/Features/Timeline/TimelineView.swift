@@ -4,6 +4,7 @@ struct TimelineView: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var viewModel = TimelineViewModel()
     @State private var searchText = ""
+    @State private var boards: [Board] = []
 
     private var displayedSummaries: [EntrySummary] {
         viewModel.isSearching ? viewModel.searchResults : viewModel.summaries
@@ -46,7 +47,7 @@ struct TimelineView: View {
                 }
             }
             .padding(10)
-            .background(.thinMaterial)
+            .background(Palette.inspectorSurface)
 
             // UI-08③：搜索出错时明确报错，不伪装成「还没有日记」
             if viewModel.isSearching, let searchError = viewModel.searchError {
@@ -56,26 +57,42 @@ struct TimelineView: View {
                 ContentUnavailableView("还没有日记", systemImage: "text.book.closed", description: Text("按 ⌘N，从今天的一句话开始。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
+                List(selection: $appState.selectedEntryId) {
                     ForEach(days) { day in
-                        Button {
-                            appState.showBoardChooser(day: day.day)
-                        } label: {
-                            TimelineDayRow(day: day)
-                                .contentShape(Rectangle())
+                        Section {
+                            ForEach(day.entries) { entry in
+                                TimelineEntryRow(entry: entry, board: boards.first { $0.id == entry.boardId }, isSelected: appState.selectedEntryId == entry.id)
+                                    .tag(entry.id)
+                                    .listRowBackground(appState.selectedEntryId == entry.id ? Palette.timelineSelection : Color.clear)
+                            }
+                        } header: {
+                            HStack {
+                                Text(DayKey.date(from: day.day)?.formatted(.dateTime.year().month().day().weekday()) ?? day.day)
+                                Spacer()
+                                Text("\(day.entries.count) 篇")
+                            }
+                            .font(.caption)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(Palette.inspectorSurface)
         .navigationTitle("时间线")
         .onAppear {
+            boards = (try? appState.boards.all()) ?? []
             viewModel.observe(appState: appState)
         }
         .onChange(of: appState.sidebarSelection) {
+            searchText = ""
             viewModel.observe(appState: appState)
+        }
+        .onChange(of: viewModel.summaries) {
+            // 板块名称/颜色是时间线行的外部元数据；数据库更新后重新读取，
+            // 避免只在首次出现时缓存旧值。
+            boards = (try? appState.boards.all()) ?? boards
         }
     }
 
@@ -84,58 +101,46 @@ struct TimelineView: View {
     }
 }
 
-private struct TimelineDayRow: View {
-    var day: TimelineDay
+private struct TimelineEntryRow: View {
+    var entry: EntrySummary
+    var board: Board?
+    var isSelected: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Palette.cinnabar)
-                .frame(width: 4)
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text(displayDate)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer()
-                    Text("\(day.entries.count) 篇")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text(preview)
-                    .font(.callout)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle().fill(Color(hex: board?.colorHex ?? "#D85A30")).frame(width: 7, height: 7)
+                Text(board?.name ?? "日记")
+                    .lineLimit(2)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            if entry.title?.isEmpty == false {
+                Text(entry.title!)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isSelected ? Palette.cinnabarDeep : Palette.ink)
+                    .lineLimit(2)
+                Text(entry.bodyPreview)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-
-                HStack(spacing: 8) {
-                    Label("\(day.boardCount) 个板块", systemImage: "square.grid.2x2")
-                    Label("\(day.totalWords) 字", systemImage: "textformat")
-                    if day.entries.contains(where: \.isFavorite) {
-                        Label("有收藏", systemImage: "heart.fill")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            } else {
+                Text(entry.bodyPreview.isEmpty ? "无标题" : String(entry.bodyPreview.prefix(48)))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isSelected ? Palette.cinnabarDeep : Palette.ink)
+                    .lineLimit(2)
             }
+            HStack {
+                Text(entry.journalDate, format: .dateTime.hour().minute())
+                Spacer()
+                if entry.isFavorite { Image(systemName: "heart.fill") }
+                if entry.isDraft { Text("草稿") }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 6)
-    }
-
-    private var displayDate: String {
-        guard let date = DayKey.date(from: day.day) else { return day.day }
-        return date.formatted(.dateTime.year().month(.wide).day().weekday(.wide))
-    }
-
-    private var preview: String {
-        guard let entry = day.latestEntry else { return "这一天还没有正文" }
-        if let title = entry.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return title
-        }
-        if !entry.bodyPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return entry.bodyPreview
-        }
-        return "这一天还没有正文"
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

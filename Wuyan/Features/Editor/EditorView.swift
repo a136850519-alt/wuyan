@@ -11,6 +11,17 @@ struct EditorView: View {
     @State private var showAIPopover = false
     @State private var selectedFontSize = 18.0
     @State private var selectedTextColor = Color.primary
+    @State private var showsInspector = true
+    @State private var editingGrowthBoard: Board?
+    @State private var archiveEditing = false
+    @State private var wordExportSnapshot: WordExportSnapshot?
+
+    private struct WordExportSnapshot: Identifiable {
+        let id = UUID()
+        var entry: Entry
+        var boardName: String
+        var assets: [MediaAsset]
+    }
 
     var body: some View {
         Group {
@@ -21,11 +32,25 @@ struct EditorView: View {
                 if immersive {
                     immersivePane
                 } else {
-                    HStack(spacing: 0) {
-                        writingPane
-                        Divider()
-                        metadataPane
-                            .frame(width: 250)
+                    GeometryReader { geometry in
+                        HStack(spacing: 0) {
+                            writingPane
+                                .frame(minWidth: 320, maxWidth: 720)
+                                .frame(maxWidth: .infinity)
+                            if showsInspector, geometry.size.width >= 680 {
+                                Divider()
+                                metadataPane.frame(width: 320)
+                            }
+                        }
+                        .overlay(alignment: .trailing) {
+                            if showsInspector, geometry.size.width < 680 {
+                                metadataPane.frame(width: min(320, geometry.size.width))
+                                    .shadow(color: .black.opacity(0.15), radius: 12, x: -4, y: 4)
+                            }
+                        }
+                        .onChange(of: geometry.size.width < 680, initial: true) { _, narrow in
+                            showsInspector = !narrow
+                        }
                     }
                 }
             }
@@ -34,12 +59,18 @@ struct EditorView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
+                    showsInspector.toggle()
+                } label: {
+                    Label(showsInspector ? "隐藏日记信息" : "显示日记信息", systemImage: "sidebar.right")
+                }
+                .help("显示或隐藏日记信息")
+                Button {
                     viewModel.isFavorite.toggle()
                 } label: {
                     Label("收藏", systemImage: viewModel.isFavorite ? "heart.fill" : "heart")
                 }
                 Button(role: .destructive) {
-                    viewModel.delete(appState: appState)
+                    appState.requestDeleteCurrentEntry()
                 } label: {
                     Label("删除", systemImage: "trash")
                 }
@@ -72,12 +103,25 @@ struct EditorView: View {
         .onAppear {
             reloadBoards()
             viewModel.configure(appState: appState)
+            viewModel.commitPendingRichText = { richTextController.commitPendingRTF() }
             viewModel.load(id: appState.selectedEntryId, appState: appState)
         }
         .onChange(of: appState.selectedEntryId) {
             viewModel.load(id: appState.selectedEntryId, appState: appState)
         }
+        .sheet(item: $editingGrowthBoard, onDismiss: reloadBoards) { board in
+            BoardEditorSheet(board: board).environmentObject(appState)
+        }
+        .sheet(item: $wordExportSnapshot) { snapshot in
+            WordExportSheet(entry: snapshot.entry, boardName: snapshot.boardName, assets: snapshot.assets)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .wuyanWillTerminate)) { _ in
+            viewModel.flushIfNeeded(appState: appState)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wuyanDiaryLockRequested)) { _ in
+            wordExportSnapshot = nil
+            editingGrowthBoard = nil
+            showAIPopover = false
             viewModel.flushIfNeeded(appState: appState)
         }
         .onDisappear {
@@ -89,13 +133,16 @@ struct EditorView: View {
 
     private var writingPane: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if viewModel.archiveLocked || viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected {
+            if viewModel.archiveLocked || viewModel.externalUpdateDetected || viewModel.externalConflictCopyDetected || viewModel.switchBlockedMessage != nil {
                 externalUpdateBanner
             }
             dateAnchor
-            TextField("题目", text: $viewModel.title)
+            TextField("题目", text: $viewModel.title, axis: .vertical)
                 .font(WuyanFont.title(30))
                 .textFieldStyle(.plain)
+                .lineLimit(1...3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: 44)
 
             editorFormattingBar
 
@@ -103,8 +150,10 @@ struct EditorView: View {
                 text: $viewModel.body,
                 rtfData: $viewModel.bodyRTF,
                 controller: richTextController,
+                identity: viewModel.entry?.id,
                 onImagePasted: handlePastedImage
             )
+                .id(viewModel.entry?.id)
                 .background(Palette.paper)
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     handleDrop(providers)
@@ -137,7 +186,7 @@ struct EditorView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.archiveLocked ? "该年份正在归档，暂不保存" : (viewModel.externalConflictCopyDetected ? "你刚才的版本已另存到冲突列表" : "该条目在后台已被更新（同步或天气/定位写入）"))
+                Text(viewModel.archiveLocked ? "该年份正在归档，暂不保存" : (viewModel.switchBlockedMessage ?? (viewModel.externalConflictCopyDetected ? "你刚才的版本已另存到冲突列表" : "该条目在后台已被更新（同步或天气/定位写入）")))
                     .font(.callout.weight(.semibold))
                 Text(viewModel.archiveLocked ? "归档完成后即可继续编辑。" : (viewModel.externalConflictCopyDetected ? "当前编辑器已显示远端版本，可在设置 › 冲突列表中查看并恢复。" : "自动保存已暂停，你的编辑仍在编辑器中。"))
                     .font(.caption)
@@ -180,14 +229,14 @@ struct EditorView: View {
             .padding(.vertical, 12)
             .background(.thinMaterial)
             .popover(isPresented: $showAIPopover) {
-                AIAssistantView(entry: viewModel.entry)
+                aiAssistant
                     .environmentObject(appState)
                     .padding()
                     .frame(width: 360)
             }
 
             writingPane
-                .frame(maxWidth: 760)
+                .frame(maxWidth: 720)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
@@ -255,7 +304,7 @@ struct EditorView: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.thinMaterial)
+        .background(Palette.inspectorSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -281,94 +330,106 @@ struct EditorView: View {
     }
 
     private var metadataPane: some View {
-        Form {
-            Section("归档") {
-                Picker("板块", selection: Binding(
-                    get: { viewModel.boardId ?? boards.first?.id },
-                    set: { viewModel.boardId = $0 }
-                )) {
-                    ForEach(boards) { board in
-                        Text(board.name).tag(Optional(board.id))
-                    }
-                }
-
-                DatePicker("日期", selection: $viewModel.journalDate, displayedComponents: [.date, .hourAndMinute])
-            }
-
-            Section("心绪") {
-                Picker("情绪", selection: $viewModel.mood) {
-                    Text("未设置").tag(Optional<Int>.none)
-                    ForEach(1...5, id: \.self) { value in
-                        Text("\(value)").tag(Optional(value))
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Toggle("收藏", isOn: $viewModel.isFavorite)
-                    .tint(Palette.cinnabar)
-            }
-
-            Section("标签") {
-                TextField("用逗号分隔", text: $viewModel.tagsText, axis: .vertical)
-                    .lineLimit(2...4)
-            }
-
-            Section("Meta") {
-                TextField("天气", text: $viewModel.weatherCondition)
-                TextField("温度 ℃", text: $viewModel.weatherTemp)
-                TextField("地点", text: $viewModel.placeName)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    TextField("纬度", text: $viewModel.latitude)
-                    TextField("经度", text: $viewModel.longitude)
+                    Text("日记信息").font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    if viewModel.isDirty { Text("正在保存…").font(.system(size: 11)) }
+                }.padding(.bottom, 2)
+                InspectorCard(title: "") {
+                    HStack {
+                        Circle().fill(Color(hex: currentBoard?.colorHex ?? "#D85A30")).frame(width: 7, height: 7)
+                        Text(currentBoard?.name ?? "日记").lineLimit(2)
+                        Spacer()
+                        Button(archiveEditing ? "完成" : "更改") { archiveEditing.toggle() }
+                            .buttonStyle(.plain).font(.system(size: 11))
+                    }
+                    Text(viewModel.journalDate, format: .dateTime.year().month().day().hour().minute())
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    if archiveEditing {
+                        Picker("板块", selection: $viewModel.boardId) {
+                            ForEach(boards) { board in Text(board.name).tag(Optional(board.id)) }
+                        }
+                        DatePicker("日期", selection: $viewModel.journalDate, displayedComponents: [.date, .hourAndMinute])
+                            .labelsHidden()
+                    }
                 }
-                Button("保存元数据") {
-                    viewModel.saveMetadata(appState: appState)
+                DayMoodCard(viewModel: viewModel).id(metadataIdentity)
+                if let entry = viewModel.entry {
+                    WeatherCardView(entry: entry) { draft, baseline in
+                        try viewModel.saveMetadata(draft, baseline: baseline, appState: appState)
+                    }.id(metadataIdentity)
                 }
-                if !viewModel.tagsText.isEmpty {
-                    WuyanPill(text: viewModel.tagsText)
+                aiAssistant
+                if let board = currentBoard, board.kind == .growth {
+                    InspectorCard(title: "成长信息", background: Palette.growthSurface, foreground: Palette.babyPinkText) {
+                        if let age = board.ageText(in: articleYear) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(age).font(.system(size: 28, weight: .medium, design: .serif))
+                                Text("\(String(articleYear)) 年的你").font(.system(size: 12))
+                            }
+                            Text("按当年生日后的岁数显示").font(.system(size: 11))
+                        } else {
+                            Button("设置生日") { editingGrowthBoard = board }
+                        }
+                    }
                 }
-            }
-
-            Section("AI 辅助") {
-                AIAssistantView(entry: viewModel.entry)
-            }
-
-            if let board = boards.first(where: { $0.id == viewModel.boardId }),
-               let age = board.ageText(on: viewModel.journalDate) {
-                Section("成长") {
-                    Text(age)
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Palette.babyPink)
-                        .foregroundStyle(Palette.babyPinkText)
-                        .clipShape(Capsule())
+                InspectorCard(title: "标签与收藏") {
+                    TextField("用逗号分隔标签", text: $viewModel.tagsText, axis: .vertical).lineLimit(2...4)
+                    Toggle("收藏这篇日记", isOn: $viewModel.isFavorite).tint(Palette.cinnabar)
                 }
-            }
-
-            if !viewModel.mediaAssets.isEmpty {
-                Section("附件") {
+                InspectorCard(title: "附件") {
+                    if viewModel.mediaAssets.isEmpty {
+                        Label("还没有附件", systemImage: "paperclip").foregroundStyle(Palette.muted)
+                    }
                     ForEach(viewModel.mediaAssets) { asset in
-                        Button {
-                            preview(asset)
-                        } label: {
+                        Button { preview(asset) } label: {
                             HStack {
                                 MediaThumb(asset: asset)
-                            VStack(alignment: .leading) {
-                                Text(asset.filename)
-                                    .lineLimit(1)
-                                Text(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading) {
+                                    Text(asset.filename).lineLimit(1)
+                                    Text(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file))
+                                        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                                }
                             }
-                        }
-                        }
-                        .buttonStyle(.plain)
+                        }.buttonStyle(.plain)
                     }
+                    Button { importMedia() } label: { Label("添加附件", systemImage: "plus") }.buttonStyle(.borderless)
                 }
-            }
+                Divider().padding(.vertical, 4)
+                VStack(alignment: .leading, spacing: 7) {
+                    Button {
+                        guard viewModel.saveNow(appState: appState), let entry = viewModel.draftEntry else {
+                            appState.errorMessage = "当前日记尚未保存成功，请先处理保存问题后再导出。"
+                            return
+                        }
+                        wordExportSnapshot = WordExportSnapshot(entry: entry, boardName: currentBoard?.name ?? "日记", assets: viewModel.mediaAssets)
+                    } label: {
+                        Label("导出为 Word", systemImage: "doc.text")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Palette.cinnabar)
+                    .disabled(viewModel.entry == nil || viewModel.isDirty && viewModel.externalUpdateDetected)
+                    Text("仅导出当前这篇日记")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }.padding(16)
         }
-        .formStyle(.grouped)
+        .background(Palette.inspectorSurface)
+        .foregroundStyle(Palette.ink)
+    }
+
+    private var currentBoard: Board? { boards.first { $0.id == viewModel.boardId } }
+    private var articleYear: Int { AppState.year(fromDayKey: viewModel.draftEntry?.dayDate ?? DayKey.today) }
+    private var metadataIdentity: String { "\(viewModel.entry?.id.uuidString ?? "")-\(viewModel.draftEntry?.dayDate ?? "")" }
+    private var aiAssistant: some View {
+        AIAssistantView(entry: viewModel.draftEntry, insertPrompt: { richTextController.insertOutline($0) },
+                        applyTitle: { viewModel.title = $0 }, applyTags: { viewModel.tagsText = $0 })
+            .id("\(metadataIdentity)-\(viewModel.boardId?.uuidString ?? "")")
     }
 
     private func reloadBoards() {
@@ -396,12 +457,12 @@ struct EditorView: View {
               let data = bitmap.representation(using: .png, properties: [:])
         else { return }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wuyan-paste-(UUID().uuidString).png")
+            .appendingPathComponent("wuyan-paste-\(UUID().uuidString).png")
         do {
             try data.write(to: url, options: .atomic)
             viewModel.importMedia(urls: [url], appState: appState, cleanupAfterImport: [url])
         } catch {
-            appState.errorMessage = "剪贴板图片无法导入媒体库：(error.localizedDescription)"
+            appState.errorMessage = "剪贴板图片无法导入媒体库：\(error.localizedDescription)"
         }
     }
 

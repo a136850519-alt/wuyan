@@ -28,6 +28,9 @@ struct SettingsView: View {
     @State private var cryptoEnabledDraft = false
     @State private var showsDisableCryptoConfirm = false
     @State private var showsConflictList = false
+    @State private var diaryPasswordSheetMode: DiaryPasswordSheetMode?
+    @State private var diaryIdleTimeout = AppSettings.diaryIdleTimeoutMinutes
+    @FocusState private var conflictEntryFocused: Bool
     @State private var pendingRestoreDirectory: URL?
     @State private var pendingJSONImportURL: URL?
     @State private var pendingEvictYear: Int?
@@ -162,6 +165,36 @@ struct SettingsView: View {
                 Button("冲突列表（查看本地留档副本并恢复）") {
                     showsConflictList = true
                 }
+                .focused($conflictEntryFocused)
+            }
+
+            Section("日记密码") {
+                if appState.isDiaryPasswordEnabled {
+                    Label("日记密码已启用", systemImage: "lock.fill")
+                        .foregroundStyle(Palette.cinnabar)
+                    Picker("静置多久后锁定", selection: $diaryIdleTimeout) {
+                        Text("1 分钟").tag(1)
+                        Text("5 分钟").tag(5)
+                        Text("15 分钟").tag(15)
+                        Text("30 分钟").tag(30)
+                        Text("60 分钟").tag(60)
+                        Text("不自动锁定").tag(0)
+                    }
+                    .onChange(of: diaryIdleTimeout) { _, value in
+                        appState.updateDiaryIdleTimeout(minutes: value)
+                    }
+                    Button("立即锁定") { appState.lockDiary() }
+                    Button("修改密码") { diaryPasswordSheetMode = .change }
+                    Button("关闭日记密码", role: .destructive) { diaryPasswordSheetMode = .disable }
+                    Text("重启、睡眠或系统锁屏后会立即要求解锁。锁定只保护晤言界面，不会回收已导出的外部文件。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("设置日记密码") { diaryPasswordSheetMode = .enable }
+                    Text("密码只对当前 Mac 生效，至少 8 个字符，使用系统钥匙串保存。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("AI 辅助") {
@@ -217,7 +250,7 @@ struct SettingsView: View {
             Section("提醒与元数据") {
                 Toggle("每日提醒", isOn: $reminderEnabled)
                     .tint(Palette.cinnabar)
-                    .onChange(of: reminderEnabled) { enabled in
+                    .onChange(of: reminderEnabled) { _, enabled in
                         guard !enabled else { return }
                         Task { await ReminderScheduler().cancelAll() }
                     }
@@ -378,6 +411,7 @@ struct SettingsView: View {
                     reminderTimes = [Date()]
                 }
             }
+
             loadConflictSummaries()
             // R1-1: 延迟加载媒体统计，不阻塞首屏
             loadMediaStats()
@@ -429,8 +463,12 @@ struct SettingsView: View {
                 Text("将检查远端副本后清理 \(year) 年本地媒体，预计释放 \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))。远端不存在的文件会保留。")
             }
         }
-        .sheet(isPresented: $showsConflictList) {
+        .sheet(isPresented: $showsConflictList, onDismiss: { conflictEntryFocused = true }) {
             ConflictListView()
+                .environmentObject(appState)
+        }
+        .sheet(item: $diaryPasswordSheetMode) { mode in
+            DiaryPasswordSheet(mode: mode)
                 .environmentObject(appState)
         }
     }
@@ -472,6 +510,7 @@ struct SettingsView: View {
         zhipuAPIKey = SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey)
         claudeAPIKey = SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey)
         cryptoPassphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
+        diaryIdleTimeout = AppSettings.diaryIdleTimeoutMinutes
     }
 
     private func loadBabyBirthday() {
@@ -558,7 +597,7 @@ struct SettingsView: View {
                     Result {
                         let entries = try database.entryDAO.timeline(filter: .all)
                         let service = ExportService()
-                        try service.exportMarkdown(entries: entries, mediaDAO: database.mediaAssetDAO, to: directory.appendingPathComponent("Markdown", isDirectory: true))
+                        try service.exportMarkdown(entries: entries, mediaDAO: database.mediaAssetDAO, dayNotes: database.dayNoteDAO, to: directory.appendingPathComponent("Markdown", isDirectory: true))
                         try service.exportJSON(entries: entries, to: directory.appendingPathComponent("wuyan-entries.json"))
                         try service.exportPDF(entries: entries, to: directory.appendingPathComponent("wuyan-export.pdf"))
                         return entries.count

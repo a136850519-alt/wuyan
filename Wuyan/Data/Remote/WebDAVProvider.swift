@@ -23,6 +23,16 @@ struct WebDAVProvider: RemoteStorageProvider {
         try request(path: path, method: "GET").url ?? baseURL
     }
 
+    func validateBasePath() async throws {
+        var request = try request(path: "/", method: "PROPFIND")
+        request.setValue("0", forHTTPHeaderField: "Depth")
+        request.httpBody = "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:propname/></D:propfind>".data(using: .utf8)
+        let (_, response) = try await send(request, method: "PROPFIND", path: "/", allowed: [200, 207, 404])
+        if (response as? HTTPURLResponse)?.statusCode == 404 {
+            throw RemoteStorageError.basePathUnavailable(baseURL.absoluteString + (baseURL.path.hasSuffix("/") ? "" : "/"))
+        }
+    }
+
     func mkcolRecursive(_ path: String) async throws {
         var current = ""
         for component in normalized(path).split(separator: "/") {
@@ -279,11 +289,13 @@ struct WebDAVProvider: RemoteStorageProvider {
         }
 
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let remotePath = normalized(path).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPath = normalized(path)
+        let remotePath = normalizedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let wantsTrailingSlash = normalizedPath.hasSuffix("/")
         let joinedPath = [basePath, remotePath]
             .filter { !$0.isEmpty }
             .joined(separator: "/")
-        components.path = joinedPath.isEmpty ? "/" : "/\(joinedPath)"
+        components.path = joinedPath.isEmpty ? "/" : "/\(joinedPath)\(wantsTrailingSlash ? "/" : "")"
         return components.url
     }
 
@@ -330,7 +342,7 @@ struct WebDAVProvider: RemoteStorageProvider {
             if let http = response as? HTTPURLResponse,
                (http.statusCode == 423 || [500, 502, 503, 504].contains(http.statusCode)),
                attempt < lockedRetries {
-                WuyanLog.sync.warning("WebDAV \(method) \(path) → \(http.statusCode)，第\(attempt + 1)次重试")
+                WuyanLog.sync.warning("WebDAV \(method, privacy: .public) \(path, privacy: .public) → \(http.statusCode, privacy: .public)，第\(attempt + 1)次重试")
                 lastResponse = response
                 try await Task.sleep(for: .milliseconds(350 * (attempt + 1)))
                 continue
@@ -344,11 +356,11 @@ struct WebDAVProvider: RemoteStorageProvider {
 
     private func validate(_ response: URLResponse, method: String, path: String, allowed: Set<Int>) throws {
         guard let http = response as? HTTPURLResponse else {
-            WuyanLog.sync.error("WebDAV \(method) \(path) → 非 HTTP 响应")
+            WuyanLog.sync.error("WebDAV \(method, privacy: .public) \(path, privacy: .public) → 非 HTTP 响应")
             throw RemoteStorageError.unexpectedStatus(-1)
         }
         guard allowed.contains(http.statusCode) else {
-            WuyanLog.sync.error("WebDAV \(method) \(path) → \(http.statusCode)（允许：\(allowed.sorted().map(String.init).joined(separator: ","))）")
+            WuyanLog.sync.error("WebDAV \(method, privacy: .public) \(path, privacy: .public) → \(http.statusCode, privacy: .public)（允许：\(allowed.sorted().map(String.init).joined(separator: ","), privacy: .public)）")
             throw RemoteStorageError.requestFailed(method: method, path: path, statusCode: http.statusCode)
         }
     }

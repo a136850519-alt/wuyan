@@ -3,11 +3,15 @@ import SwiftUI
 /// UI-06：应用内冲突列表。条目和日札落败版本都在这里查看、恢复或丢弃。
 struct ConflictListView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @State private var copies: [ConflictCopyItem] = []
     @State private var selected: ConflictCopyItem?
     @State private var currentEntry: Entry?
     @State private var dayNoteCopies: [DayNoteConflictCopy] = []
     @State private var selectedDayNote: DayNoteConflictCopy?
+    @State private var loadError: String?
+    @State private var pendingResolution: Resolution?
+    @State private var pendingNoteRestore: Bool?
 
     struct ConflictCopyItem: Identifiable, Equatable {
         let id: UUID
@@ -19,7 +23,21 @@ struct ConflictListView: View {
     }
 
     var body: some View {
-        HSplitView {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("同步冲突").font(.title3.weight(.semibold))
+                    Text("对比并选择要保留的版本；关闭不会处理任何冲突。")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                }
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.bordered).accessibilityLabel("关闭同步冲突")
+            }.padding(20).background(Palette.inspectorSurface)
+            if let loadError {
+                HStack { Text(loadError); Button("重试", action: reload) }.font(.callout).padding(12)
+            }
+            HSplitView {
             List {
                 if copies.isEmpty && dayNoteCopies.isEmpty {
                     Text("没有待处理的冲突。")
@@ -69,13 +87,47 @@ struct ConflictListView: View {
                     }
                 }
             }
-            .frame(minWidth: 260, maxWidth: 340)
+            .frame(minWidth: 210, idealWidth: 245, maxWidth: 300)
 
             detailPane
                 .frame(minWidth: 420)
         }
-        .navigationTitle("同步冲突")
+            HStack {
+                Button { dismiss() } label: { Label("返回设置", systemImage: "chevron.left") }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                if selectedDayNote != nil {
+                    Button("恢复此日札") { pendingNoteRestore = true }
+                    Button("丢弃副本") { pendingNoteRestore = false }
+                } else if selected != nil {
+                    Button("保留本地副本") { pendingResolution = .keepLocal }
+                    Button("保留当前版本") { pendingResolution = .keepRemote }
+                    Button("两份都保留") { resolve(.keepBoth) }.buttonStyle(.borderedProminent)
+                }
+            }.padding(16).background(Palette.inspectorSurface)
+        }
+        .frame(minWidth: 800, idealWidth: 1000, minHeight: 500, idealHeight: 590)
+        .background(Palette.paper)
         .onAppear(perform: reload)
+        .onExitCommand { dismiss() }
+        .confirmationDialog("只保留所选版本？", isPresented: Binding(get: { pendingResolution != nil }, set: { if !$0 { pendingResolution = nil } })) {
+            Button("确认只保留所选版本", role: .destructive) {
+                if let resolution = pendingResolution { resolve(resolution) }
+                pendingResolution = nil
+            }
+            Button("取消", role: .cancel) { pendingResolution = nil }
+        } message: {
+            Text("另一版本将被替换或丢弃。若想保留两份内容，请取消并选择“两份都保留”。")
+        }
+        .confirmationDialog("处理日札副本？", isPresented: Binding(get: { pendingNoteRestore != nil }, set: { if !$0 { pendingNoteRestore = nil } })) {
+            Button(pendingNoteRestore == true ? "恢复此日札" : "丢弃副本", role: .destructive) {
+                if let restore = pendingNoteRestore { resolveDayNote(restore: restore) }
+                pendingNoteRestore = nil
+            }
+            Button("取消", role: .cancel) { pendingNoteRestore = nil }
+        } message: {
+            Text(pendingNoteRestore == true ? "恢复会更新这一天的一句话与共享心情，当前日札会另存为副本。" : "这个日札副本将被丢弃，当前日札不变。")
+        }
     }
 
     @ViewBuilder
@@ -88,6 +140,8 @@ struct ConflictListView: View {
                             .font(.headline)
                         Text("\(noteCopy.note.date) · 副本时间 \(noteCopy.createdAt.formatted(.dateTime))")
                             .foregroundStyle(.secondary)
+                        Text(Mood.from(noteCopy.note.mood).map { "当日心情：\($0.emoji) \($0.label)" } ?? "心情未记录")
+                            .font(.callout)
                         Text(noteCopy.note.rawSummary)
                             .textSelection(.enabled)
                         Divider()
@@ -97,12 +151,6 @@ struct ConflictListView: View {
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                HStack {
-                    Button("恢复此日札") { resolveDayNote(restore: true) }
-                    Button("丢弃副本") { resolveDayNote(restore: false) }
-                    Spacer()
-                }
-                .padding(12)
             }
         } else if let item = selected {
             VStack(alignment: .leading, spacing: 12) {
@@ -116,7 +164,7 @@ struct ConflictListView: View {
                             .textSelection(.enabled)
                         if let current = currentEntry {
                             Divider()
-                            Label("当前本地版本（远端）", systemImage: "doc.text")
+                            Label("当前版本", systemImage: "doc.text")
                                 .font(.headline)
                             Text(current.body)
                                 .foregroundStyle(.secondary)
@@ -126,21 +174,15 @@ struct ConflictListView: View {
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                HStack {
-                    Button("保留本地副本") { resolve(.keepLocal) }
-                    Button("保留远端版本") { resolve(.keepRemote) }
-                    Button("都保留（副本存为新日记）") { resolve(.keepBoth) }
-                    Spacer()
-                }
-                .padding(12)
             }
         } else {
-            ContentUnavailableView("选择一个冲突条目", systemImage: "arrow.triangle.branch")
+            ContentUnavailableView(copies.isEmpty && dayNoteCopies.isEmpty ? "没有待处理的冲突" : "选择一个冲突条目", systemImage: "arrow.triangle.branch")
         }
     }
 
     private func reload() {
-        copies = ((try? appState.db.entryDAO.conflictCopies()) ?? []).map { copy in
+        do {
+        copies = (try appState.db.entryDAO.conflictCopies()).map { copy in
             ConflictCopyItem(
                 id: copy.id,
                 dayDate: copy.envelope.entry.dayDate,
@@ -150,7 +192,8 @@ struct ConflictListView: View {
                 createdAt: copy.createdAt
             )
         }
-        dayNoteCopies = (try? appState.db.dayNoteDAO.conflictCopyRecords()) ?? []
+        dayNoteCopies = try appState.db.dayNoteDAO.conflictCopyRecords()
+        loadError = nil
         if let selected, !copies.contains(where: { $0.id == selected.id }) {
             self.selected = nil
             currentEntry = nil
@@ -158,6 +201,7 @@ struct ConflictListView: View {
         if let selectedDayNote, !dayNoteCopies.contains(where: { $0.id == selectedDayNote.id }) {
             self.selectedDayNote = nil
         }
+        } catch { loadError = "冲突列表加载失败：\(error.localizedDescription)" }
     }
 
     private enum Resolution {
@@ -206,7 +250,7 @@ struct ConflictListView: View {
         guard let selectedDayNote else { return }
         do {
             if restore {
-                try appState.db.dayNoteDAO.upsert(selectedDayNote.note)
+                try appState.db.dayNoteDAO.restoreConflictCopy(selectedDayNote)
                 appState.syncCoordinator.notifyEditCompleted()
             }
             try appState.db.dayNoteDAO.dropConflictCopy(id: selectedDayNote.id)
