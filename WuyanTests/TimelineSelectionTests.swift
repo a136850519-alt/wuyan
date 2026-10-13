@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import Wuyan
 
+extension GlobalStateSuite {
 @Suite("Timeline selection")
 @MainActor
 struct TimelineSelectionTests {
@@ -27,4 +28,5 @@ struct TimelineSelectionTests {
             #expect(appState.selectedEntryId == favorite.id)
         }
     }
+}
 }

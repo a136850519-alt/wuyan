@@ -26,6 +26,9 @@ private final class PromptSequenceProvider: AIProvider, @unchecked Sendable {
     func embed(_ texts: [String]) async throws -> [[Float]] { texts.map { _ in [0] } }
 }
 
+// AppState tests share global injection points with C03 and must inherit
+// the parent suite's serialization, including across async suspension.
+extension GlobalStateSuite {
 @Suite("Onboarding and writing prompts")
 struct OnboardingAndPromptsTests {
     @Test("换名保留用户手改名称")
@@ -140,4 +143,5 @@ struct OnboardingAndPromptsTests {
             #expect(try db.entryDAO.entries(on: DayKey.today).filter { $0.boardId == board.id }.count == 1)
         }
     }
+}
 }
