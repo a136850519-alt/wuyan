@@ -39,6 +39,8 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
     public var colorHex: String
     public var iconName: String
     public var kind: BoardKind
+    /// 用户对该板块想留下的内容主题。旧数据库和旧同步载荷可缺失。
+    public var recordingTheme: String?
     public var babyBirthday: Date?
     public var disallowCloudAI: Bool
     public var sortOrder: Int
@@ -54,6 +56,7 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         colorHex: String,
         iconName: String,
         kind: BoardKind = .freeform,
+        recordingTheme: String? = nil,
         babyBirthday: Date? = nil,
         disallowCloudAI: Bool = false,
         sortOrder: Int,
@@ -66,6 +69,7 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         self.colorHex = colorHex
         self.iconName = iconName
         self.kind = kind
+        self.recordingTheme = recordingTheme
         self.babyBirthday = babyBirthday
         self.disallowCloudAI = disallowCloudAI
         self.sortOrder = sortOrder
@@ -75,7 +79,7 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, colorHex, iconName, kind, babyBirthday, disallowCloudAI,
+        case id, name, colorHex, iconName, kind, recordingTheme, babyBirthday, disallowCloudAI,
              sortOrder, createdAt, updatedAt, deletedAt
     }
 
@@ -86,6 +90,7 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         colorHex = try c.decode(String.self, forKey: .colorHex)
         iconName = try c.decode(String.self, forKey: .iconName)
         kind = try c.decode(BoardKind.self, forKey: .kind)
+        recordingTheme = try c.decodeIfPresent(String.self, forKey: .recordingTheme)
         babyBirthday = try c.decodeIfPresent(Date.self, forKey: .babyBirthday)
         disallowCloudAI = try c.decodeIfPresent(Bool.self, forKey: .disallowCloudAI) ?? false
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
@@ -101,6 +106,7 @@ public struct Board: Identifiable, Codable, Equatable, FetchableRecord, Persista
         try c.encode(colorHex, forKey: .colorHex)
         try c.encode(iconName, forKey: .iconName)
         try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(recordingTheme, forKey: .recordingTheme)
         try c.encodeIfPresent(babyBirthday, forKey: .babyBirthday)
         try c.encode(disallowCloudAI, forKey: .disallowCloudAI)
         try c.encode(sortOrder, forKey: .sortOrder)

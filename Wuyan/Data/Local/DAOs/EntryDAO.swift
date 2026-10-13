@@ -231,7 +231,8 @@ public struct EntryDAO: EntryRepository {
     /// excludes the persisted RTFD blob; the plain body is enough for
     /// embeddings and avoids loading attachment data into the actor that
     /// initiated the request.
-    func aiEntries(boardId: UUID? = nil, limit: Int? = nil, since: Date? = nil, through: Date? = nil) throws -> [Entry] {
+    func aiEntries(boardId: UUID? = nil, limit: Int? = nil, since: Date? = nil, through: Date? = nil,
+                   sinceDay: String? = nil, throughDay: String? = nil) throws -> [Entry] {
         try writer.read { db in
             var sql = """
                 SELECT id, boardId, dayDate, journalDate, createdAt, updatedAt,
@@ -243,6 +244,8 @@ public struct EntryDAO: EntryRepository {
             if let boardId { sql += " AND boardId = ?"; arguments += [boardId.uuidString] }
             if let since { sql += " AND journalDate >= ?"; arguments += [since] }
             if let through { sql += " AND journalDate <= ?"; arguments += [through] }
+            if let sinceDay { sql += " AND dayDate >= ?"; arguments += [sinceDay] }
+            if let throughDay { sql += " AND dayDate <= ?"; arguments += [throughDay] }
             sql += " ORDER BY journalDate DESC, id DESC"
             if let limit { sql += " LIMIT ?"; arguments += [limit] }
             return try Entry.fetchAll(db, sql: sql, arguments: arguments)
@@ -746,6 +749,17 @@ public struct EntryDAO: EntryRepository {
         let entry = Entry(boardId: boardId, dayDate: dayNote.date, journalDate: journalDate)
         try save(entry)
         return try self.entry(id: entry.id) ?? entry
+    }
+
+    /// Reuse an untouched draft created for this board and day. Onboarding can
+    /// be reopened or interrupted without leaving several indistinguishable
+    /// blank entries behind.
+    func firstBlankEntry(boardId: UUID, dayDate: String) throws -> Entry? {
+        try entries(on: dayDate).first {
+            $0.boardId == boardId && $0.isDraft && $0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            ($0.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) &&
+            $0.bodyRTF == nil && $0.tags.isEmpty && $0.mediaIds.isEmpty
+        }
     }
 
     public func softDelete(id: UUID) throws {

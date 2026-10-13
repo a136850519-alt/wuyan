@@ -6,6 +6,7 @@ public final class AppDatabase {
     public let entryDAO: EntryDAO
     public let boardDAO: BoardDAO
     public let dayNoteDAO: DayNoteDAO
+    let aiPromptHistoryDAO: AIPromptHistoryDAO
     let mediaAssetDAO: MediaAssetDAO
     let syncStateDAO: SyncStateDAO
 
@@ -14,6 +15,7 @@ public final class AppDatabase {
         self.entryDAO = EntryDAO(writer: writer)
         self.boardDAO = BoardDAO(writer: writer)
         self.dayNoteDAO = DayNoteDAO(writer: writer)
+        self.aiPromptHistoryDAO = AIPromptHistoryDAO(writer: writer)
         self.mediaAssetDAO = MediaAssetDAO(writer: writer)
         self.syncStateDAO = SyncStateDAO(writer: writer)
         try Self.migrator.migrate(writer)
@@ -276,6 +278,25 @@ public final class AppDatabase {
             try db.alter(table: "daynote") { table in
                 table.add(column: "moodCleared", .boolean).notNull().defaults(to: false)
             }
+        }
+        migrator.registerMigration("v19-board-recording-theme") { db in
+            // 记录主题是可选字段，旧板块和旧同步载荷继续有效。
+            try db.alter(table: "board") { table in
+                table.add(column: "recordingTheme", .text)
+            }
+        }
+        migrator.registerMigration("v20-ai-prompt-history") { db in
+            // Keep every generated set so “换一组” can avoid repeating recent angles;
+            // opening the same day restores the newest row.
+            try db.create(table: "ai_prompt_history") { table in
+                table.column("id", .text).primaryKey()
+                table.column("boardId", .text).notNull()
+                table.column("dayDate", .text).notNull()
+                table.column("prompts", .text).notNull()
+                table.column("createdAt", .datetime).notNull()
+            }
+            try db.create(index: "idx_ai_prompt_history_board_day", on: "ai_prompt_history", columns: ["boardId", "dayDate"])
+            try db.create(index: "idx_ai_prompt_history_board_created", on: "ai_prompt_history", columns: ["boardId", "createdAt"])
         }
         return migrator
     }

@@ -5,6 +5,9 @@ extension Notification.Name {
     static let wuyanWillTerminate = Notification.Name("wuyanWillTerminate")
     /// 日记锁先遮挡根视图，再让编辑器保存可恢复草稿。
     static let wuyanDiaryLockRequested = Notification.Name("wuyanDiaryLockRequested")
+    /// Posted after onboarding selects the first entry so the AppKit text view
+    /// can become first responder once its SwiftUI representable is mounted.
+    static let wuyanFocusEditor = Notification.Name("wuyanFocusEditor")
 }
 
 /// B08：macOS 26/27 的 SwiftUI 缺陷——WindowGroup 应用收到 reopen（点击 Dock 图标）时：

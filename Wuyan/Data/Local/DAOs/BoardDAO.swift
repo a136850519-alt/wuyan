@@ -9,11 +9,17 @@ public protocol BoardRepository {
 
 public enum BoardError: LocalizedError {
     case cannotDeleteNonEmptyBoard
+    case emptyName
+    case duplicateName
 
     public var errorDescription: String? {
         switch self {
         case .cannotDeleteNonEmptyBoard:
             return "这个板块里还有日记，先迁移或删除条目后再删除板块。"
+        case .emptyName:
+            return "板块名称不能为空。"
+        case .duplicateName:
+            return "已经有同名板块，请换一个名称。"
         }
     }
 }
@@ -46,9 +52,40 @@ public struct BoardDAO: BoardRepository {
     }
 
     public func save(_ board: Board) throws {
-        var board = board
-        board.updatedAt = Date()
-        try saveRemote(board)
+        try saveMany([board])
+    }
+
+    /// Validates and writes a group of boards in one transaction. This keeps
+    /// onboarding from leaving half of the selected recommendations behind if
+    /// one name is invalid or collides with an existing board.
+    func saveMany(_ boards: [Board]) throws {
+        var normalized: [Board] = []
+        var seen = Set<String>()
+        for original in boards {
+            var board = original
+            board.name = board.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !board.name.isEmpty else { throw BoardError.emptyName }
+            let key = board.name.lowercased()
+            guard seen.insert(key).inserted else { throw BoardError.duplicateName }
+            normalized.append(board)
+        }
+        try writer.write { db in
+            let existing = try Board
+                .filter(Board.Columns.deletedAt == nil)
+                .fetchAll(db)
+            for board in normalized {
+                let duplicate = existing.contains {
+                    $0.id != board.id &&
+                    $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .localizedCaseInsensitiveCompare(board.name) == .orderedSame
+                }
+                guard !duplicate else { throw BoardError.duplicateName }
+            }
+            for var board in normalized {
+                board.updatedAt = Date()
+                try board.save(db)
+            }
+        }
     }
 
     /// 保存已经带有远端版本时间的板块，不刷新 updatedAt。

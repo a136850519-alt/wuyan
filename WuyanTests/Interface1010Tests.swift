@@ -28,7 +28,10 @@ struct Interface1010Tests {
             try AppDatabase.migrator.migrate(writer, upTo: "v16-daynote-conflicts")
             try writer.write { db in
                 try db.execute(sql: "INSERT INTO daynote(date, rawSummary, poeticLine, createdAt) VALUES (?, ?, ?, ?)", arguments: ["2026-10-10", "旧原文", "旧诗行", Date()])
-                try Board.builtIn[0].save(db)
+                // Seed the historical schema with historical columns, rather
+                // than encoding today's Board model into a v16 table.
+                let board = Board.builtIn[0]
+                try db.execute(sql: "INSERT INTO board(id, name, colorHex, iconName, kind, disallowCloudAI, sortOrder, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: [board.id.uuidString, board.name, board.colorHex, board.iconName, board.kind.rawValue, false, board.sortOrder, board.createdAt, board.updatedAt])
                 try Entry(boardId: Board.builtIn[0].id, dayDate: "2026-10-10", body: "旧正文", mood: 2).save(db)
             }
             let database = try AppDatabase(writer: writer)

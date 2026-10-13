@@ -65,6 +65,7 @@ struct WritingContext {
     var boardName: String? = nil
     var boardKind: BoardKind? = nil
     var boardId: UUID? = nil
+    var boardTheme: String? = nil
     var annualAge: String? = nil
     var draft: Entry? = nil
     var mood: Int? = nil

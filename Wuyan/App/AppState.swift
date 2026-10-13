@@ -32,6 +32,7 @@ final class AppState: ObservableObject {
     let boards: BoardDAO
     let entries: EntryDAO
     let dayNotes: DayNoteDAO
+    let aiPromptHistory: AIPromptHistoryDAO
     let aiService: AIService
     var poeticGenerator: PoeticGenerator { aiService }
     let mediaStore: LocalMediaStore
@@ -100,6 +101,7 @@ final class AppState: ObservableObject {
         self.boards = database.boardDAO
         self.entries = database.entryDAO
         self.dayNotes = database.dayNoteDAO
+        self.aiPromptHistory = database.aiPromptHistoryDAO
         // R2-4: 替换 try! 为安全初始化，失败降级而非崩溃
         let mediaStore: LocalMediaStore
         do {
@@ -305,6 +307,46 @@ final class AppState: ObservableObject {
 
     func showBoardChooser(day: String) {
         boardChooserDay = day
+    }
+
+    /// Create the blank entry used by the final onboarding step and open the
+    /// editor immediately. It intentionally skips the daily ritual so a new
+    /// user can start typing without an extra NAS/summary gate.
+    @discardableResult
+    func startFirstEntry(board: Board) -> Bool {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：新建内容已禁用。"
+            return false
+        }
+        do {
+            let dayKey = DayKey.today
+            let existingNote = try dayNotes.note(dayKey: dayKey)
+            let note = existingNote ?? DayNote(
+                date: dayKey,
+                rawSummary: "",
+                poeticLine: "",
+                generatedBy: nil,
+                mood: nil,
+                moodCleared: false
+            )
+            if existingNote == nil {
+                try dayNotes.upsert(note)
+            }
+            let entry = try entries.firstBlankEntry(boardId: board.id, dayDate: dayKey)
+                ?? entries.create(boardId: board.id, dayNote: note, journalDate: Date())
+            syncCoordinator.notifyEditCompleted()
+            sidebarSelection = .yearBoard(Self.year(fromDayKey: dayKey), board.id)
+            selectedEntryId = entry.id
+            isShowingRitual = false
+            boardChooserDay = nil
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .wuyanFocusEditor, object: entry.id)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     func openEntry(id: UUID) {

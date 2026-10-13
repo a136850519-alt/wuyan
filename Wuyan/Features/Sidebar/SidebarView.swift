@@ -158,7 +158,9 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $isAddingBoard, onDismiss: reloadBoards) {
-            BoardEditorSheet(board: nil)
+            BoardEditorSheet(board: nil) { board in
+                appState.selectedBoardId = board.id
+            }
                 .environmentObject(appState)
         }
         .sheet(item: $editingBoard, onDismiss: reloadBoards) { board in
@@ -270,10 +272,14 @@ struct BoardEditorSheet: View {
     @State private var colorHex: String
     @State private var iconName: String
     @State private var kind: BoardKind
+    @State private var recordingTheme: String
     @State private var babyBirthday: Date
     @State private var disallowCloudAI: Bool
+    @State private var validationMessage: String?
+    @State private var nameSuggestions: [String] = []
 
     private var board: Board?
+    private var onSaved: (Board) -> Void
 
     private let symbolCandidates = [
         "book", "book.fill", "heart.fill", "star.fill", "leaf.fill",
@@ -287,22 +293,50 @@ struct BoardEditorSheet: View {
         "#F44336", "#009688", "#FF9800", "#607D8B", "#795548",
     ]
 
-    init(board: Board?) {
+    init(board: Board?, onSaved: @escaping (Board) -> Void = { _ in }) {
         self.board = board
+        self.onSaved = onSaved
         _name = State(initialValue: board?.name ?? "")
         _colorHex = State(initialValue: board?.colorHex ?? "#D85A30")
         _iconName = State(initialValue: board?.iconName ?? "book")
         _kind = State(initialValue: board?.kind ?? .freeform)
+        _recordingTheme = State(initialValue: board?.recordingTheme ?? "")
         _babyBirthday = State(initialValue: board?.babyBirthday ?? Date())
         _disallowCloudAI = State(initialValue: board?.disallowCloudAI ?? false)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
             Text(board == nil ? "新建板块" : "板块设置")
                 .font(.title2.weight(.semibold))
 
             TextField("名称", text: $name)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("记录主题（选填）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("帮我起名") { suggestNames() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Palette.cinnabar)
+                        .disabled(recordingTheme.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                TextField("例如：周末散步时遇到的小店、街道与见闻", text: $recordingTheme, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...4)
+                if !nameSuggestions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(nameSuggestions, id: \.self) { suggestion in
+                            Button(suggestion) { name = suggestion }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                    }
+                }
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("图标")
@@ -371,7 +405,13 @@ struct BoardEditorSheet: View {
             Toggle("禁止云端 AI", isOn: $disallowCloudAI)
                 .tint(Palette.cinnabar)
 
-            HStack {
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+                HStack {
                 Spacer()
                 Button("取消") {
                     dismiss()
@@ -382,10 +422,12 @@ struct BoardEditorSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Palette.cinnabar)
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
+            .padding(24)
         }
-        .padding(24)
         .frame(width: 420)
+        .frame(maxHeight: 620)
     }
 
     private func save() {
@@ -401,6 +443,7 @@ struct BoardEditorSheet: View {
                 colorHex: colorHex,
                 iconName: iconName,
                 kind: kind,
+                recordingTheme: recordingTheme.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : recordingTheme.trimmingCharacters(in: .whitespacesAndNewlines),
                 babyBirthday: kind == .growth ? babyBirthday : nil,
                 disallowCloudAI: disallowCloudAI,
                 sortOrder: board?.sortOrder ?? sortOrder,
@@ -410,10 +453,17 @@ struct BoardEditorSheet: View {
             // A privacy toggle must take effect for AI requests in the same session.
             appState.reloadAISettings()
             appState.syncCoordinator.notifyEditCompleted()
+            onSaved(updated)
             dismiss()
         } catch {
-            appState.errorMessage = error.localizedDescription
+            validationMessage = error.localizedDescription
         }
+    }
+
+    private func suggestNames() {
+        let theme = recordingTheme.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !theme.isEmpty else { return }
+        nameSuggestions = BoardSuggestion.localNames(theme: theme, kind: kind)
     }
 }
 

@@ -15,7 +15,8 @@ final class AIRequestState: ObservableObject {
     private var token = UUID()
     private var task: Task<Void, Never>?
 
-    func run(_ work: @escaping @MainActor () async throws -> AIRequestOutput) {
+    func run(onSuccess: (@MainActor (AIRequestOutput) throws -> Void)? = nil,
+             _ work: @escaping @MainActor () async throws -> AIRequestOutput) {
         cancel()
         let identity = token
         isRunning = true
@@ -24,6 +25,9 @@ final class AIRequestState: ObservableObject {
             do {
                 let result = try await work()
                 guard let self, !Task.isCancelled, self.token == identity else { return }
+                // Commit side effects once, under the same cancellation/token
+                // guard as UI publication, rather than from a replaying publisher.
+                try onSuccess?(result)
                 self.output = result
                 self.isRunning = false
                 self.task = nil

@@ -71,6 +71,38 @@ final class AIService: PoeticGenerator {
         return try await provider.complete(writingMessages(context: context), options: AIOptions(temperature: 0.8, maxTokens: 300))
     }
 
+    /// Validate each complete pair before it can be shown or persisted. At most
+    /// two regeneration attempts follow the initial request.
+    func generateWritingPrompts(context: WritingContext, excluding: [String] = [], semanticExcluding: [String]? = nil) async throws -> [String] {
+        guard isEnabled, let provider else { throw AIError.disabled }
+        var rejected: [String] = []
+        var feedback: [String] = []
+        let history = semanticExcluding ?? excluding
+        for _ in 0..<3 {
+            try Task.checkCancellation()
+            let messages = try writingMessages(context: context, excluding: rejected + excluding,
+                                               retryFeedback: feedback.joined(separator: "；"))
+            let raw = try await provider.complete(messages, options: AIOptions(temperature: 0.8, maxTokens: 300))
+            try Task.checkCancellation()
+            let validation = WritingPromptValidation.check(raw, excluding: rejected + excluding,
+                                                          semanticExcluding: history)
+            feedback = validation.reasons
+            if validation.prompts.count == 2 {
+                let semanticFeedback = try await checkPromptMeaning(validation.prompts, history: history, provider: provider)
+                if semanticFeedback == nil { return validation.prompts }
+                feedback = [semanticFeedback ?? "语义校验未通过"]
+                rejected.insert(contentsOf: validation.prompts, at: 0)
+            } else {
+                rejected.insert(contentsOf: validation.rejected, at: 0)
+            }
+        }
+        throw AIError.providerError("暂时没能生成两条合适的问题，请稍后再试。")
+    }
+
+    static func validatedWritingPrompts(_ raw: String, excluding: [String] = [], semanticExcluding: [String]? = nil) -> [String] {
+        WritingPromptValidation.check(raw, excluding: excluding, semanticExcluding: semanticExcluding ?? excluding).prompts
+    }
+
     func streamWritingPrompt(context: WritingContext) -> AsyncThrowingStream<String, Error> {
         guard isEnabled, let provider else { return AsyncThrowingStream { $0.finish(throwing: AIError.disabled) } }
         do { return provider.stream(try writingMessages(context: context), options: AIOptions(temperature: 0.8, maxTokens: 300)) }
@@ -79,10 +111,23 @@ final class AIService: PoeticGenerator {
 
     /// 普通与流式入口共享同一板块、隐私及长度边界。
     private func writingMessages(context: WritingContext) throws -> [AIMessage] {
+        try writingMessages(context: context, excluding: [])
+    }
+
+    private func writingMessages(context: WritingContext, excluding: [String], retryFeedback: String = "") throws -> [AIMessage] {
         if requiresCloudConsent, let id = context.boardId, cloudBlockedBoardIds.contains(id) {
             throw AIError.blockedBySensitiveBoard
         }
-        var source = context.recentEntries.filter { context.boardId == nil || $0.boardId == context.boardId }
+        let dayKey = DayKey.string(from: context.date)
+        let sinceDate = DayKey.calendar.date(byAdding: .day, value: -6, to: context.date) ?? context.date
+        let sinceKey = DayKey.string(from: sinceDate)
+        var source = context.recentEntries.filter {
+            (context.boardId == nil || $0.boardId == context.boardId) &&
+            $0.dayDate >= sinceKey && $0.dayDate <= dayKey
+        }
+        // The editor draft is the active document even when an unsaved test or
+        // import snapshot still carries an older day key; the current draft is
+        // explicitly allowed alongside the bounded dated history.
         let draft = context.draft.flatMap { item in context.boardId == nil || item.boardId == context.boardId ? item : nil }
         if let draft { source.removeAll { $0.id == draft.id } }
         let safe = filterCloudAllowed(source)
@@ -92,7 +137,6 @@ final class AIService: PoeticGenerator {
         let recent = Self.boundedEntries(safe, maxEntries: safeDraft == nil ? 5 : 4,
                                         maxCharactersPerEntry: Self.cloudContextMaxCharactersPerEntry,
                                         maxCharacters: Self.cloudContextMaxCharacters - draftText.count)
-        let dayKey = DayKey.string(from: context.date)
         let hasPreviousAnniversary = recent.contains { $0.dayDate < dayKey && $0.dayDate.suffix(5) == dayKey.suffix(5) }
         let direction: String
         switch context.boardKind {
@@ -105,15 +149,21 @@ final class AIService: PoeticGenerator {
         case .none:
             direction = "结合板块名称与已有内容提开放式问题，不假定为成长或五年板块。"
         }
+        let theme = context.boardTheme?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let themeLine = theme.flatMap { $0.isEmpty ? nil : "记录主题：\(String($0.prefix(240)))" } ?? "记录主题：未设置"
+        let exclusionLine = excluding.isEmpty ? "" : "不要重复这些已经开过的问题：\n\(excluding.prefix(20).joined(separator: "\n"))"
+        let retryLine = retryFeedback.isEmpty ? "" : "上一轮输出未通过校验：\(retryFeedback)。请这次严格修正，只输出两条合格内容。"
         return [
-            AIMessage(role: .system, content: "生成恰好两个简短、开放式中文日记引导问题，每行一个。温和、不评判，不虚构经历。\(direction)"),
+            AIMessage(role: .system, content: "生成恰好两个简短、开放式中文日记引导问题，每行一个。每条约 20–60 个汉字，具体、温和，关注不同角度；不评判、不虚构经历，不用模板化套话。\(direction)\(retryLine)"),
             AIMessage(role: .user, content: """
                 板块：\(String((context.boardName ?? "当前板块").prefix(120)))
+                \(themeLine)
                 所属日：\(dayKey)
                 天气：\(context.weather?.condition ?? "未记录")；心情：\(Mood.from(context.mood)?.label ?? "未记录")
                 当前草稿：\(draftText)
                 本板块已有内容：
                 \(recent.map { "[\($0.dayDate)] \($0.body)" }.joined(separator: "\n"))
+                \(exclusionLine)
                 """)
         ]
     }

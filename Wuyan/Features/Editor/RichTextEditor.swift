@@ -85,6 +85,11 @@ final class RichTextEditorController: ObservableObject {
         coordinator?.commitPendingRTF()
     }
 
+    func focus() {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+    }
+
     func insertOutline(_ prompt: String) {
         guard let textView else { return }
         let insertion = NSRange(location: textView.selectedRange().location, length: 0)

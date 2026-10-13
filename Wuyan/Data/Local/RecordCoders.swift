@@ -20,7 +20,7 @@ enum RecordCoding {
 
 extension Board {
     public enum Columns: String, ColumnExpression {
-        case id, name, colorHex, iconName, kind, babyBirthday, disallowCloudAI, sortOrder, createdAt, updatedAt, deletedAt
+        case id, name, colorHex, iconName, kind, recordingTheme, babyBirthday, disallowCloudAI, sortOrder, createdAt, updatedAt, deletedAt
     }
 
     public init(row: Row) throws {
@@ -31,6 +31,7 @@ extension Board {
         colorHex = row[Columns.colorHex]
         iconName = row[Columns.iconName]
         kind = BoardKind(rawValue: row[Columns.kind]) ?? .freeform
+        recordingTheme = row[Columns.recordingTheme]
         babyBirthday = row[Columns.babyBirthday]
         disallowCloudAI = row[Columns.disallowCloudAI]
         sortOrder = row[Columns.sortOrder]
@@ -45,6 +46,7 @@ extension Board {
         container[Columns.colorHex] = colorHex
         container[Columns.iconName] = iconName
         container[Columns.kind] = kind.rawValue
+        container[Columns.recordingTheme] = recordingTheme
         container[Columns.babyBirthday] = babyBirthday
         container[Columns.disallowCloudAI] = disallowCloudAI
         container[Columns.sortOrder] = sortOrder

@@ -109,6 +109,12 @@ struct EditorView: View {
         .onChange(of: appState.selectedEntryId) {
             viewModel.load(id: appState.selectedEntryId, appState: appState)
         }
+        .onChange(of: viewModel.entry?.id) { _, id in
+            guard let id, id == appState.selectedEntryId else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                richTextController.focus()
+            }
+        }
         .sheet(item: $editingGrowthBoard, onDismiss: reloadBoards) { board in
             BoardEditorSheet(board: board).environmentObject(appState)
         }
@@ -117,6 +123,10 @@ struct EditorView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .wuyanWillTerminate)) { _ in
             viewModel.flushIfNeeded(appState: appState)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wuyanFocusEditor)) { notification in
+            guard let id = notification.object as? UUID, id == viewModel.entry?.id else { return }
+            DispatchQueue.main.async { richTextController.focus() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .wuyanDiaryLockRequested)) { _ in
             wordExportSnapshot = nil
