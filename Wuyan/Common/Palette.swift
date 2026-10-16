@@ -1,5 +1,52 @@
 import SwiftUI
 
+/// Stable identifiers used by the year color picker. The same identifier
+/// resolves to a light or dark token at render time.
+enum YearTheme: String, CaseIterable, Identifiable {
+    case pine, mist, wisteria, rose, wheat, clay
+
+    static let `default`: YearTheme = .pine
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .pine: return "松绿"
+        case .mist: return "雾蓝"
+        case .wisteria: return "藤紫"
+        case .rose: return "玫瑰"
+        case .wheat: return "麦黄"
+        case .clay: return "陶棕"
+        }
+    }
+
+    var lightHex: String {
+        switch self {
+        case .pine: return "#416857"
+        case .mist: return "#6288A4"
+        case .wisteria: return "#8C75A6"
+        case .rose: return "#B96E83"
+        case .wheat: return "#A17B3C"
+        case .clay: return "#9A7564"
+        }
+    }
+
+    var darkHex: String {
+        switch self {
+        case .pine: return "#A7C4A3"
+        case .mist: return "#9DBBD0"
+        case .wisteria: return "#BEA9DA"
+        case .rose: return "#E5A3B7"
+        case .wheat: return "#DFBF7D"
+        case .clay: return "#D5B09A"
+        }
+    }
+
+    var color: Color { Palette.adaptive(light: lightHex, dark: darkHex) }
+    var softColor: Color {
+        Palette.adaptive(light: lightHex, dark: darkHex).opacity(0.14)
+    }
+}
+
 enum Palette {
     static let cinnabar = Color(hex: "#D85A30")
     static let cinnabarDeep = adaptive(light: "#A94120", dark: "#EC8057")
@@ -28,7 +75,7 @@ enum Palette {
     static let growthSurface = babyPink
     static let hairline = adaptive(light: "#DED9CE", dark: "#41413C")
 
-    private static func adaptive(light: String, dark: String) -> Color {
+    static func adaptive(light: String, dark: String) -> Color {
         let lightColor = NSColor(Color(hex: light))
         let darkColor = NSColor(Color(hex: dark))
         return Color(nsColor: NSColor(name: nil) { appearance in

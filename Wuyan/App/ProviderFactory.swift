@@ -20,7 +20,9 @@ enum ProviderFactory {
         let provider = AppSettings.aiProvider
         if provider == "zhipu" {
             // R2-7: 直接用 AppSettings（已含 trim），URL 化在此完成
-            let endpoint = URL(string: AppSettings.zhipuEndpoint) ?? URL(string: "https://open.bigmodel.cn/api/paas/v4")!
+            guard let endpoint = URL(string: AppSettings.zhipuEndpoint),
+                  endpoint.host != nil,
+                  ["http", "https"].contains(endpoint.scheme?.lowercased() ?? "") else { return nil }
             return ZhipuProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey),
                 model: AppSettings.zhipuModel,
@@ -28,19 +30,37 @@ enum ProviderFactory {
             )
         }
         if provider == "claude" {
-            let endpoint = URL(string: AppSettings.claudeEndpoint) ?? URL(string: "https://api.anthropic.com/v1/messages")!
+            guard let endpoint = URL(string: AppSettings.claudeEndpoint),
+                  endpoint.host != nil,
+                  ["http", "https"].contains(endpoint.scheme?.lowercased() ?? "") else { return nil }
             return ClaudeProvider(
                 apiKey: SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey),
                 model: AppSettings.claudeModel,
                 endpoint: endpoint
             )
         }
-        let endpoint = URL(string: AppSettings.ollamaEndpoint) ?? URL(string: "http://localhost:11434")!
+        guard let endpoint = URL(string: AppSettings.ollamaEndpoint),
+              endpoint.host != nil,
+              ["http", "https"].contains(endpoint.scheme?.lowercased() ?? "") else { return nil }
         return OllamaProvider(
             endpoint: endpoint,
             model: AppSettings.ollamaModel,
             embeddingModel: AppSettings.ollamaEmbeddingModel
         )
+    }
+
+    /// Settings validation uses the same URL rules as provider construction.
+    /// A bare host or a non HTTP(S) scheme is never silently replaced by a
+    /// default endpoint.
+    static func validateHTTPURL(_ raw: String, service: String) throws -> URL {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else {
+            throw AIError.invalidEndpoint(service: service)
+        }
+        return url
     }
 
     static func makeRemoteStorageProvider() throws -> any RemoteStorageProvider {
@@ -49,7 +69,9 @@ enum ProviderFactory {
         }
         let backend = AppSettings.storageBackend
         if backend == "s3" {
-            guard let endpoint = URL(string: AppSettings.s3Endpoint) else {
+            guard let endpoint = URL(string: AppSettings.s3Endpoint),
+                  endpoint.scheme?.lowercased() == "https",
+                  endpoint.host != nil else {
                 throw RemoteStorageError.invalidBaseURL
             }
             let bucket = AppSettings.s3Bucket
@@ -68,7 +90,10 @@ enum ProviderFactory {
             )
         }
 
-        guard let url = URL(string: AppSettings.webDAVBaseURL) else {
+        guard let url = URL(string: AppSettings.webDAVBaseURL),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else {
             throw RemoteStorageError.invalidBaseURL
         }
         let username = AppSettings.webDAVUsername

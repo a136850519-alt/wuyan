@@ -18,7 +18,7 @@ struct DiaryLockView: View {
                 bookFrontPage
                 bookBackPage
             }
-            .frame(maxWidth: 930, minHeight: 520)
+            .frame(maxWidth: 1030, minHeight: 560)
             .background(Palette.paper)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .black.opacity(0.22), radius: 32, y: 16)
@@ -87,7 +87,13 @@ struct DiaryLockView: View {
                 .padding(.top, 10)
 
             SecureField("日记密码", text: $password)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .font(.system(size: 18))
+                .padding(.horizontal, 20)
+                .frame(maxWidth: 416, minHeight: 60)
+                .background(Palette.field)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(message.isEmpty ? Palette.hairline : Palette.cinnabar, lineWidth: message.isEmpty ? 1 : 2))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .focused($passwordFocused)
                 .padding(.top, 30)
                 .disabled(isVerifying)
@@ -100,7 +106,7 @@ struct DiaryLockView: View {
                     Spacer()
                     Image(systemName: "arrow.right")
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: 416, minHeight: 52)
             }
             .buttonStyle(.borderedProminent)
             .tint(Palette.cinnabar)
@@ -117,18 +123,20 @@ struct DiaryLockView: View {
             .padding(.top, 14)
             .disabled(isVerifying)
 
-            if retrySeconds > 0 {
-                Text("请在 \(retrySeconds) 秒后重试。")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Palette.cinnabar)
-                    .padding(.top, 18)
+            VStack(alignment: .leading, spacing: 6) {
+                if retrySeconds > 0 {
+                    Text("请在 \(retrySeconds) 秒后重试。")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Palette.cinnabar)
+                }
+                if !message.isEmpty {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(Palette.cinnabar)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if !message.isEmpty {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(Palette.cinnabar)
-                    .padding(.top, retrySeconds > 0 ? 6 : 18)
-            }
+            .frame(maxWidth: 416, minHeight: 40, alignment: .topLeading)
             Spacer()
             Text("你的记录，仅在解锁后呈现。")
                 .font(WuyanFont.body(12))
@@ -136,6 +144,7 @@ struct DiaryLockView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(48)
+        .frame(maxWidth: 416, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Palette.paper)
         .overlay(alignment: .bottom) { Text("· 02 ·").font(.caption2).foregroundStyle(Palette.muted).padding(.bottom, 22).accessibilityHidden(true) }

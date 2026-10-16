@@ -74,6 +74,9 @@ enum EditorBodyFont {
 final class RichTextEditorController: ObservableObject {
     weak var textView: NSTextView?
     private weak var coordinator: RichTextEditor.Coordinator?
+    private var savedSelection = NSRange(location: 0, length: 0)
+    @Published private(set) var currentFontSize: CGFloat = 18
+    @Published private(set) var currentTextColor: NSColor = .labelColor
 
     fileprivate func attach(coordinator: RichTextEditor.Coordinator) {
         self.coordinator = coordinator
@@ -88,6 +91,40 @@ final class RichTextEditorController: ObservableObject {
     func focus() {
         guard let textView else { return }
         textView.window?.makeFirstResponder(textView)
+        if NSMaxRange(savedSelection) <= textView.string.utf16.count {
+            textView.setSelectedRange(savedSelection)
+        }
+    }
+
+    fileprivate func rememberSelection(_ range: NSRange) {
+        savedSelection = range
+    }
+
+    fileprivate func syncFormattingState() {
+        guard let textView else { return }
+        let range = textView.selectedRange()
+        let attributes: [NSAttributedString.Key: Any]
+        if range.length > 0, let storage = textView.textStorage, storage.length > 0 {
+            attributes = storage.attributes(at: min(range.location, storage.length - 1), effectiveRange: nil)
+        } else {
+            attributes = textView.typingAttributes
+        }
+        if let font = attributes[.font] as? NSFont {
+            currentFontSize = font.pointSize
+        }
+        if let color = attributes[.foregroundColor] as? NSColor {
+            currentTextColor = color
+        }
+    }
+
+    private func activeSelection(for textView: NSTextView) -> NSRange {
+        let current = textView.selectedRange()
+        if textView.window?.firstResponder !== textView,
+           NSMaxRange(savedSelection) <= textView.string.utf16.count {
+            return savedSelection
+        }
+        savedSelection = current
+        return current
     }
 
     func insertOutline(_ prompt: String) {
@@ -100,22 +137,27 @@ final class RichTextEditorController: ObservableObject {
 
     func applyFontSize(_ size: CGFloat) {
         guard let textView else { return }
-        let range = textView.selectedRange()
-        let currentFont = textView.typingAttributes[.font] as? NSFont
+        textView.window?.makeFirstResponder(textView)
+        let range = activeSelection(for: textView)
+        let currentFont = effectiveTypingAttributes(for: textView, range: range)[.font] as? NSFont
             ?? NSFont(name: WuyanFont.bundledSerifName, size: size)
             ?? NSFont.systemFont(ofSize: size)
         let font = NSFontManager.shared.convert(currentFont, toSize: size)
         applyAttribute(.font, value: font, range: range)
+        currentFontSize = size
     }
 
     func applyColor(_ color: NSColor) {
         guard let textView else { return }
-        applyAttribute(.foregroundColor, value: color, range: textView.selectedRange())
+        textView.window?.makeFirstResponder(textView)
+        applyAttribute(.foregroundColor, value: color, range: activeSelection(for: textView))
+        currentTextColor = color
     }
 
     func applyAlignment(_ alignment: NSTextAlignment) {
         guard let textView else { return }
-        let selectedRange = textView.selectedRange()
+        textView.window?.makeFirstResponder(textView)
+        let selectedRange = activeSelection(for: textView)
         let paragraphRange = (textView.string as NSString).paragraphRange(for: selectedRange)
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.alignment = alignment
@@ -145,12 +187,28 @@ final class RichTextEditorController: ObservableObject {
 
     private func applyAttribute(_ key: NSAttributedString.Key, value: Any, range: NSRange) {
         guard let textView else { return }
+        let attributes = effectiveTypingAttributes(for: textView, range: range)
         if range.length > 0 {
             textView.textStorage?.addAttribute(key, value: value, range: range)
+            var nextAttributes = attributes
+            nextAttributes[key] = value
+            textView.typingAttributes = nextAttributes
         } else {
+            if textView.typingAttributes.isEmpty {
+                textView.typingAttributes = attributes
+            }
             textView.typingAttributes[key] = value
         }
         textView.didChangeText()
+    }
+
+    private func effectiveTypingAttributes(for textView: NSTextView, range: NSRange) -> [NSAttributedString.Key: Any] {
+        if !textView.typingAttributes.isEmpty { return textView.typingAttributes }
+        let location = min(max(range.location - (range.length > 0 ? 0 : 1), 0), textView.textStorage?.length ?? 0)
+        guard let storage = textView.textStorage, storage.length > 0 else {
+            return [.font: EditorBodyFont.nsFont(size: 18), .foregroundColor: NSColor.labelColor]
+        }
+        return storage.attributes(at: min(location, storage.length - 1), effectiveRange: nil)
     }
 
 }
@@ -242,6 +300,18 @@ struct RichTextEditor: NSViewRepresentable {
             }
         }
 
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.controller.rememberSelection(textView.selectedRange())
+            if textView.selectedRange().length == 0,
+               let storage = textView.textStorage, storage.length > 0 {
+                let attributes = storage.attributes(at: min(textView.selectedRange().location, storage.length - 1), effectiveRange: nil)
+                textView.typingAttributes = attributes
+            }
+            parent.controller.syncFormattingState()
+        }
+
+        @MainActor
         func loadIfNeeded(textView: NSTextView, text: String, rtfData: Data?) {
             guard pendingRTFSerialization == nil else { return }
             if let rtfData, rtfData != lastRTFData {
@@ -260,6 +330,7 @@ struct RichTextEditor: NSViewRepresentable {
             parent.rtfData = data
         }
 
+        @MainActor
         func load(textView: NSTextView, text: String, rtfData: Data?) {
             self.textView = textView
             isApplyingExternalValue = true
@@ -281,6 +352,11 @@ struct RichTextEditor: NSViewRepresentable {
                 )
                 if let attributed = rtfd ?? rtf {
                     textView.textStorage?.setAttributedString(attributed)
+                    let location = min(textView.selectedRange().location, max(0, attributed.length - 1))
+                    if attributed.length > 0 {
+                        textView.typingAttributes = attributed.attributes(at: location, effectiveRange: nil)
+                    }
+                    syncFormattingState(textView: textView)
                     lastRTFData = rtfData
                     return
                 }
@@ -300,7 +376,16 @@ struct RichTextEditor: NSViewRepresentable {
             )
             textView.textStorage?.setAttributedString(attributed)
             textView.typingAttributes[.paragraphStyle] = paragraph
+            textView.typingAttributes[.font] = font
+            textView.typingAttributes[.foregroundColor] = NSColor.labelColor
+            syncFormattingState(textView: textView)
             lastRTFData = Self.rtfData(from: textView)
+        }
+
+        @MainActor
+        private func syncFormattingState(textView: NSTextView) {
+            parent.controller.rememberSelection(textView.selectedRange())
+            parent.controller.syncFormattingState()
         }
 
         private static func rtfData(from textView: NSTextView) -> Data? {

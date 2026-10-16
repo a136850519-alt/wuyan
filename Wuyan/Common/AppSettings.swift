@@ -29,6 +29,7 @@ enum SettingKey {
 
     // MARK: - 外观
     static let appearanceBodyFont = "settings.appearance.bodyFont"
+    static let appearanceYearThemes = "settings.appearance.yearThemes"
 
     // MARK: - 提醒与元数据
     static let reminderEnabled = "settings.reminder.enabled"
@@ -133,6 +134,35 @@ enum AppSettings {
     // MARK: - 外观
     static var bodyFont: String {
         defaults.string(forKey: SettingKey.appearanceBodyFont) ?? "LXGWWenKai-Regular"
+    }
+
+    /// 年份主题色是本机外观偏好，只保存稳定标识，不写入日记内容。
+    static func yearTheme(_ year: Int) -> String {
+        let themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String]
+        let raw = themes?[String(year)] ?? YearTheme.default.rawValue
+        return YearTheme(rawValue: raw)?.rawValue ?? YearTheme.default.rawValue
+    }
+
+    static func setYearTheme(_ theme: String, for year: Int) {
+        var themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String] ?? [:]
+        themes[String(year)] = YearTheme(rawValue: theme)?.rawValue ?? YearTheme.default.rawValue
+        defaults.set(themes, forKey: SettingKey.appearanceYearThemes)
+    }
+
+    // Settings screens use these small typed writes when committing a draft.
+    // Keeping them on the same injected defaults store preserves test isolation.
+    static func setString(_ value: String, for key: String) {
+        defaults.set(value, forKey: key)
+    }
+
+    static func setBool(_ value: Bool, for key: String) {
+        defaults.set(value, forKey: key)
+    }
+
+    static func resetYearTheme(for year: Int) {
+        var themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String] ?? [:]
+        themes.removeValue(forKey: String(year))
+        defaults.set(themes, forKey: SettingKey.appearanceYearThemes)
     }
 
     // MARK: - 提醒与元数据

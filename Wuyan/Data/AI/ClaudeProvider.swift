@@ -14,7 +14,7 @@ struct ClaudeProvider: AIProvider {
     }
 
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String {
-        guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingAPIKey(service: "Claude") }
         let system = messages.first(where: { $0.role == .system })?.content
         let body = ClaudeRequest(
             model: model,
@@ -36,7 +36,7 @@ struct ClaudeProvider: AIProvider {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
+                    guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingAPIKey(service: "Claude") }
                     let system = messages.first(where: { $0.role == .system })?.content
                     let body = ClaudeRequest(
                         model: model,
@@ -50,7 +50,7 @@ struct ClaudeProvider: AIProvider {
                     request.httpBody = try JSONEncoder().encode(body)
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw AIError.providerError("Claude 请求失败：HTTP \(http.statusCode)。")
+                        throw Self.httpError(status: http.statusCode, service: "Claude")
                     }
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
@@ -88,10 +88,25 @@ struct ClaudeProvider: AIProvider {
 
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
+        let classifiedError = Self.httpError(status: http.statusCode, service: "Claude")
         if let error = try? JSONDecoder().decode(ClaudeErrorResponse.self, from: data) {
-            throw AIError.providerError(error.error?.message ?? "Claude 请求失败：HTTP \(http.statusCode)。")
+            switch classifiedError {
+            case .providerError:
+                throw AIError.providerError(error.error?.message ?? "Claude 请求失败：HTTP \(http.statusCode)。")
+            default:
+                throw classifiedError
+            }
         }
-        throw AIError.providerError("Claude 请求失败：HTTP \(http.statusCode)。")
+        throw classifiedError
+    }
+
+    private static func httpError(status: Int, service: String) -> AIError {
+        switch status {
+        case 401: return .authenticationFailed(service: service)
+        case 403: return .permissionDenied(service: service)
+        case 429: return .rateLimited(service: service)
+        default: return .providerError("\(service) 请求失败：HTTP \(status)。")
+        }
     }
 }
 

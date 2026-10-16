@@ -41,8 +41,14 @@ struct OllamaProvider: AIProvider {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(requestBody)
-        let (data, _) = try await session.data(for: request)
-        let response = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
+        let (data, urlResponse) = try await session.data(for: request)
+        try validate(response: urlResponse)
+        let response: OllamaChatResponse
+        do {
+            response = try JSONDecoder().decode(OllamaChatResponse.self, from: data)
+        } catch {
+            throw AIError.malformedResponse(service: "Ollama")
+        }
         return response.message.content
     }
 
@@ -57,7 +63,7 @@ struct OllamaProvider: AIProvider {
                     request.httpBody = try JSONEncoder().encode(requestBody)
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw AIError.missingConfiguration
+                        throw httpError(status: http.statusCode)
                     }
                     for try await line in bytes.lines {
                         guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
@@ -73,7 +79,7 @@ struct OllamaProvider: AIProvider {
                     continuation.finish()
                 } catch {
                     if Task.isCancelled { continuation.finish() }
-                    else { continuation.finish(throwing: error) }
+                    else { continuation.finish(throwing: error is AIError ? error : AIError.network(service: "Ollama")) }
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -87,9 +93,24 @@ struct OllamaProvider: AIProvider {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
-            let (data, _) = try await session.data(for: request)
-            return try JSONDecoder().decode(OllamaEmbeddingResponse.self, from: data).embedding
+            let (data, response) = try await session.data(for: request)
+            try validate(response: response)
+            do {
+                return try JSONDecoder().decode(OllamaEmbeddingResponse.self, from: data).embedding
+            } catch {
+                throw AIError.malformedResponse(service: "Ollama")
+            }
         }
+    }
+
+    private func validate(response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
+        throw httpError(status: http.statusCode)
+    }
+
+    private func httpError(status: Int) -> AIError {
+        if status == 404 { return .modelNotFound(service: "Ollama", model: model) }
+        return .providerError("Ollama 请求失败：HTTP \(status)。")
     }
 }
 

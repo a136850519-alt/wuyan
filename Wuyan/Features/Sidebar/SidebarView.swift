@@ -9,6 +9,7 @@ struct SidebarView: View {
     @State private var pendingArchiveYear: Int?
     @State private var isArchivedExpanded = true
     @State private var expandedYears: Set<Int> = []
+    @State private var yearThemeSheetYear: Int?
     // 连续天数在 reloadEntries 时算好缓存：body 每帧都算会对全部条目
     // 逐条解析日期，同步进度连发时足以打满主线程（与 TimelineView 同款问题）。
     @State private var streakCount = 0
@@ -16,17 +17,17 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $appState.sidebarSelection) {
             Section {
-                Label("全部", systemImage: "tray.full")
+                Self.navigationRow("全部", systemImage: "tray.full", color: Self.navigationColor(.all))
                     .tag(SidebarSelection.all)
-                Label("收藏", systemImage: "heart")
+                Self.navigationRow("收藏", systemImage: "heart", color: Self.navigationColor(.favorites))
                     .tag(SidebarSelection.favorites)
-                Label("草稿", systemImage: "doc.text")
+                Self.navigationRow("草稿", systemImage: "doc.text", color: Self.navigationColor(.drafts))
                     .tag(SidebarSelection.drafts)
-                Label("历史上的今天", systemImage: "clock.arrow.circlepath")
+                Self.navigationRow("历史上的今天", systemImage: "clock.arrow.circlepath", color: Self.navigationColor(.todayInHistory))
                     .tag(SidebarSelection.todayInHistory)
-                Label("日历", systemImage: "calendar")
+                Self.navigationRow("日历", systemImage: "calendar", color: Self.navigationColor(.calendar))
                     .tag(SidebarSelection.calendar)
-                Label("回收站", systemImage: "trash")
+                Self.navigationRow("回收站", systemImage: "trash", color: Self.navigationColor(.trash))
                     .tag(SidebarSelection.trash)
             }
 
@@ -34,7 +35,19 @@ struct SidebarView: View {
                 ForEach(years, id: \.self) { year in
                     HStack {
                         Label(String(year), systemImage: "calendar")
+                            .foregroundStyle(AppSettings.yearTheme(year).theme.color)
                         Spacer()
+                        Button {
+                            yearThemeSheetYear = year
+                        } label: {
+                            Circle()
+                                .fill(AppSettings.yearTheme(year).theme.color)
+                                .frame(width: 10, height: 10)
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("设置 \(year) 年主题色")
                         Button {
                             toggleYear(year)
                         } label: {
@@ -45,6 +58,11 @@ struct SidebarView: View {
                         .buttonStyle(.plain)
                     }
                     .tag(SidebarSelection.year(year))
+                    .listRowBackground(
+                        appState.sidebarSelection == .year(year)
+                            ? AppSettings.yearTheme(year).theme.softColor
+                            : Color.clear
+                    )
                     .contextMenu {
                         Button(role: .destructive) {
                             pendingArchiveYear = year
@@ -167,6 +185,16 @@ struct SidebarView: View {
             BoardEditorSheet(board: board)
                 .environmentObject(appState)
         }
+        .sheet(isPresented: Binding(
+            get: { yearThemeSheetYear != nil },
+            set: { if !$0 { yearThemeSheetYear = nil } }
+        )) {
+            if let year = yearThemeSheetYear {
+                YearThemePicker(year: year) {
+                    yearThemeSheetYear = nil
+                }
+            }
+        }
         .confirmationDialog(
             pendingArchiveYear.map { "归档 \($0) 年到 NAS？" } ?? "归档到 NAS？",
             isPresented: Binding(
@@ -232,6 +260,105 @@ struct SidebarView: View {
             appState.sidebarSelection = .all
         }
         reloadBoards()
+    }
+
+    private static func navigationColor(_ selection: SidebarSelection) -> Color {
+        switch selection {
+        case .all: return Palette.adaptive(light: "#6288A4", dark: "#9DBBD0")
+        case .favorites: return Palette.adaptive(light: "#B96E83", dark: "#E5A3B7")
+        case .drafts: return Palette.adaptive(light: "#A17B3C", dark: "#DFBF7D")
+        case .todayInHistory: return Palette.adaptive(light: "#8C75A6", dark: "#BEA9DA")
+        case .calendar: return Palette.adaptive(light: "#508D82", dark: "#92C6BB")
+        case .trash: return Palette.adaptive(light: "#9A7564", dark: "#D5B09A")
+        default: return Palette.ink
+        }
+    }
+
+    private static func navigationRow(_ title: String, systemImage: String, color: Color) -> some View {
+        Label {
+            Text(title).foregroundStyle(Palette.ink)
+        } icon: {
+            Image(systemName: systemImage).foregroundStyle(color)
+        }
+    }
+}
+
+private extension String {
+    var theme: YearTheme { YearTheme(rawValue: self) ?? .default }
+}
+
+private struct YearThemePicker: View {
+    let year: Int
+    let onClose: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: YearTheme
+
+    init(year: Int, onClose: @escaping () -> Void) {
+        self.year = year
+        self.onClose = onClose
+        _draft = State(initialValue: AppSettings.yearTheme(year).theme)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("设置 \(year) 年主题色")
+                .font(.title3.weight(.semibold))
+            Text("只影响该年份的侧栏强调色与选中状态。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 10)], spacing: 10) {
+                ForEach(YearTheme.allCases) { theme in
+                    Button {
+                        draft = theme
+                    } label: {
+                        HStack(spacing: 8) {
+                            Circle().fill(theme.color).frame(width: 20, height: 20)
+                            Text(theme.displayName)
+                            Spacer()
+                            if draft == theme { Image(systemName: "checkmark") }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(theme.softColor)
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(draft == theme ? theme.color : .clear, lineWidth: 2))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(theme.displayName)
+                }
+            }
+
+            HStack {
+                Circle().fill(draft.color).frame(width: 10, height: 10)
+                Text("\(year) 年预览")
+                    .foregroundStyle(draft.color)
+                Spacer()
+            }
+            .padding(12)
+            .background(Palette.sidebarPaper)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            HStack {
+                Button("恢复默认") { draft = .default }
+                Spacer()
+                Button("取消") {
+                    onClose(); dismiss()
+                }
+                Button("应用") {
+                    AppSettings.setYearTheme(draft.rawValue, for: year)
+                    onClose(); dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .tint(draft.color)
+            }
+        }
+        .padding(28)
+        .frame(width: 496)
+        .fixedSize(horizontal: false, vertical: true)
+        .onExitCommand {
+            onClose(); dismiss()
+        }
     }
 }
 

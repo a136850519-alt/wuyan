@@ -3,23 +3,25 @@ import OSLog
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
-    @AppStorage(SettingKey.storageBackend) private var storageBackend = "webDAV"
-    @AppStorage(SettingKey.webDAVBaseURL) private var webDAVBaseURL = "https://nas.local:5006"
-    @AppStorage(SettingKey.webDAVUsername) private var webDAVUsername = ""
-    @AppStorage(SettingKey.s3Endpoint) private var s3Endpoint = ""
-    @AppStorage(SettingKey.s3Region) private var s3Region = "us-east-1"
-    @AppStorage(SettingKey.s3Bucket) private var s3Bucket = "wuyan"
-    @AppStorage(SettingKey.s3AccessKey) private var s3AccessKey = ""
-    @AppStorage(SettingKey.s3PathStyle) private var s3PathStyle = true
-    @AppStorage(SettingKey.aiEnabled) private var aiEnabled = false
-    @AppStorage(SettingKey.aiRitual) private var ritualAI = true
-    @AppStorage(SettingKey.aiProvider) private var aiProvider = "zhipu"
-    @AppStorage(SettingKey.zhipuEndpoint) private var zhipuEndpoint = "https://open.bigmodel.cn/api/paas/v4"
-    @AppStorage(SettingKey.zhipuModel) private var zhipuModel = "glm-5.2"
-    @AppStorage(SettingKey.claudeEndpoint) private var claudeEndpoint = "https://api.anthropic.com/v1/messages"
-    @AppStorage(SettingKey.claudeModel) private var claudeModel = "claude-sonnet-5"
-    @AppStorage(SettingKey.ollamaEndpoint) private var ollamaEndpoint = "http://localhost:11434"
-    @AppStorage(SettingKey.ollamaModel) private var ollamaModel = "qwen2.5"
+    // Storage and AI controls are drafts. They are committed only by the
+    // explicit save actions, so connection tests can safely use unsaved input.
+    @State private var storageBackend = AppSettings.storageBackend
+    @State private var webDAVBaseURL = AppSettings.webDAVBaseURL
+    @State private var webDAVUsername = AppSettings.webDAVUsername
+    @State private var s3Endpoint = AppSettings.s3Endpoint
+    @State private var s3Region = AppSettings.s3Region
+    @State private var s3Bucket = AppSettings.s3Bucket
+    @State private var s3AccessKey = AppSettings.s3AccessKey
+    @State private var s3PathStyle = AppSettings.s3PathStyle
+    @State private var aiEnabled = AppSettings.aiEnabled
+    @State private var ritualAI = AppSettings.aiRitual
+    @State private var aiProvider = AppSettings.aiProvider
+    @State private var zhipuEndpoint = AppSettings.zhipuEndpoint
+    @State private var zhipuModel = AppSettings.zhipuModel
+    @State private var claudeEndpoint = AppSettings.claudeEndpoint
+    @State private var claudeModel = AppSettings.claudeModel
+    @State private var ollamaEndpoint = AppSettings.ollamaEndpoint
+    @State private var ollamaModel = AppSettings.ollamaModel
     @AppStorage(SettingKey.appearanceBodyFont) private var bodyFont = "LXGWWenKai-Regular"
     @AppStorage(SettingKey.reminderEnabled) private var reminderEnabled = false
     @AppStorage(SettingKey.reminderSkipWrittenDays) private var skipWrittenDays = true
@@ -41,14 +43,16 @@ struct SettingsView: View {
     @State private var reminderTimes: [Date] = []
     @State private var isTestingStorage = false
     @State private var isTestingAI = false
+    @State private var unavailableSecureKeys: Set<String> = []
     @State private var cryptoPassphrase = ""
     @State private var cryptoConfirm = ""
     @State private var babyBirthday = Date()
     @State private var conflictSummaries: [UUID: EntrySummary] = [:]
-    /// R2-10: 统一消息状态，替代 10 个并行 @State message 变量
-    @State private var statusMessage: (section: String, text: String)?
-    /// R2-10: 自动过期定时器
-    @State private var statusTimer: Timer?
+    /// Each settings section owns its feedback lifecycle. Errors and active
+    /// operations remain visible until the next meaningful state transition.
+    @State private var statusMessages: [String: SectionStatusMessage] = [:]
+    @State private var statusWorkItems: [String: DispatchWorkItem] = [:]
+    @State private var aiConfigurationRevision = 0
     /// R1-1: 缓存媒体统计，避免 body 中每次重算
     @State private var mediaTotalSize: Int64 = 0
     @State private var mediaYearSizes: [Int: Int64] = [:]
@@ -63,6 +67,37 @@ struct SettingsView: View {
         static let crypto = "crypto"
         static let media = "media"
         static let diag = "diag"
+    }
+
+    private enum StatusSeverity {
+        case error, processing, warning, info, success
+
+        var icon: String {
+            switch self {
+            case .error: return "exclamationmark.triangle.fill"
+            case .processing: return "arrow.triangle.2.circlepath"
+            case .warning: return "exclamationmark.circle"
+            case .info: return "info.circle"
+            case .success: return "checkmark.circle"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .error: return Palette.adaptive(light: "#A23F35", dark: "#F0A39B")
+            case .processing: return Palette.muted
+            case .warning: return Palette.adaptive(light: "#A17B3C", dark: "#DFBF7D")
+            case .info: return Palette.muted
+            case .success: return Palette.adaptive(light: "#416857", dark: "#A7C4A3")
+            }
+        }
+    }
+
+    private struct SectionStatusMessage: Identifiable {
+        let id = UUID()
+        let section: String
+        let text: String
+        let severity: StatusSeverity
     }
 
     var body: some View {
@@ -101,6 +136,9 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(isTestingStorage)
+                Text("测试连接只发送一条简短探测请求，不发送日记正文。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 Button {
                     appState.syncNow()
                 } label: {
@@ -219,11 +257,19 @@ struct SettingsView: View {
                 if aiProvider == "zhipu" {
                     TextField("智谱 Base URL", text: $zhipuEndpoint)
                     TextField("智谱模型", text: $zhipuModel)
-                    SecureField("智谱 API Key", text: $zhipuAPIKey)
+                    HStack {
+                        SecureField("智谱 API Key", text: $zhipuAPIKey)
+                        Button("移除") { removeAPIKey(SecureSettingKey.zhipuAPIKey, service: "智谱") }
+                            .buttonStyle(.link)
+                    }
                 } else if aiProvider == "claude" {
                     TextField("Claude URL", text: $claudeEndpoint)
                     TextField("Claude 模型", text: $claudeModel, prompt: Text("如 claude-sonnet-5、claude-opus-5"))
-                    SecureField("Claude API Key", text: $claudeAPIKey)
+                    HStack {
+                        SecureField("Claude API Key", text: $claudeAPIKey)
+                        Button("移除") { removeAPIKey(SecureSettingKey.claudeAPIKey, service: "Claude") }
+                            .buttonStyle(.link)
+                    }
                 } else {
                     TextField("Ollama URL", text: $ollamaEndpoint)
                     TextField("Ollama 模型", text: $ollamaModel)
@@ -241,6 +287,9 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(isTestingAI)
+                Text("测试连接只发送一条简短测试请求，不发送日记正文。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 sectionStatus(for: StatusSection.ai)
                 Text("云端模式会在发送日记内容前提示发送范围。自动采集位置与天气时，会把约 3km 精度的坐标发送给 Apple 地理编码和 Open-Meteo。")
                     .font(.caption)
@@ -478,39 +527,86 @@ struct SettingsView: View {
     /// 显示某个 Section 的状态消息（如果有）
     @ViewBuilder
     private func sectionStatus(for section: String) -> some View {
-        if let msg = statusMessage, msg.section == section {
-            Text(msg.text)
-                .foregroundStyle(.secondary)
+        if let msg = statusMessages[section] {
+            Label(msg.text, systemImage: msg.severity.icon)
+                .foregroundStyle(msg.severity.color)
+                .symbolEffect(.pulse, isActive: msg.severity == .processing)
+                .textSelection(.enabled)
         }
     }
 
-    /// 设置状态消息，5 秒后自动清除
-    private func setStatus(_ section: String, _ text: String) {
-        statusMessage = (section, text)
-        statusTimer?.invalidate()
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { _ in
+    private func setStatus(_ section: String, _ text: String, severity explicitSeverity: StatusSeverity? = nil) {
+        let severity = explicitSeverity ?? inferSeverity(text)
+        statusWorkItems[section]?.cancel()
+        let message = SectionStatusMessage(section: section, text: text, severity: severity)
+        statusMessages[section] = message
+
+        let duration: TimeInterval?
+        switch severity {
+        case .error, .processing: duration = nil
+        case .warning: duration = 8
+        case .info: duration = 6
+        case .success: duration = 4
+        }
+        guard let duration else { return }
+        let id = message.id
+        let work = DispatchWorkItem {
             Task { @MainActor in
-                self.statusMessage = nil
+                guard self.statusMessages[section]?.id == id else { return }
+                self.statusMessages[section] = nil
+                self.statusWorkItems[section] = nil
             }
         }
+        statusWorkItems[section] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
     /// 清除某个 Section 的状态消息
     private func clearStatus(_ section: String) {
-        if let msg = statusMessage, msg.section == section {
-            statusMessage = nil
+        statusWorkItems[section]?.cancel()
+        statusWorkItems[section] = nil
+        statusMessages[section] = nil
+    }
+
+    private func inferSeverity(_ text: String) -> StatusSeverity {
+        if text.contains("正在") || text.contains("处理中") || text.contains("迁移中") { return .processing }
+        if text.contains("失败") || text.contains("错误") || text.contains("无法") || text.contains("未") || text.contains("不") || text.contains("拒绝") || text.contains("超时") || text.contains("异常") || text.contains("缺少") || text.contains("无效") {
+            return .error
         }
+        if text.contains("部分") || text.contains("跳过") || text.contains("提示") { return .warning }
+        if text.contains("成功") || text.contains("已保存") || text.contains("已完成") || text.contains("已创建") || text.contains("已导出") || text.contains("已还原") || text.contains("已清理") || text.contains("已关闭") { return .success }
+        return .info
+    }
+
+    private func setStatus(_ section: String, _ text: String) {
+        setStatus(section, text, severity: nil)
     }
 
     // MARK: - 数据加载
 
     private func loadSecureSettings() {
-        webDAVPassword = SecureSettings.load(SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
-        s3SecretKey = SecureSettings.load(SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey)
-        zhipuAPIKey = SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey)
-        claudeAPIKey = SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey)
+        unavailableSecureKeys.removeAll()
+        webDAVPassword = loadSecureValue(SecureSettingKey.webDAVPassword)
+        s3SecretKey = loadSecureValue(SecureSettingKey.s3SecretKey)
+        zhipuAPIKey = loadSecureValue(SecureSettingKey.zhipuAPIKey)
+        claudeAPIKey = loadSecureValue(SecureSettingKey.claudeAPIKey)
         cryptoPassphrase = SecureSettings.load(SecureSettingKey.syncPassphrase, legacyDefaultsKey: SecureSettingKey.legacySyncPassphrase)
         diaryIdleTimeout = AppSettings.diaryIdleTimeoutMinutes
+        if unavailableSecureKeys.contains(SecureSettingKey.zhipuAPIKey) || unavailableSecureKeys.contains(SecureSettingKey.claudeAPIKey) {
+            setStatus(StatusSection.ai, "无法读取已保存的 API Key，请重试读取。", severity: .error)
+        }
+    }
+
+    private func loadSecureValue(_ key: String) -> String {
+        switch SecureSettings.readResult(key) {
+        case let .value(value):
+            return value
+        case .missing:
+            return SecureSettings.load(key, legacyDefaultsKey: key)
+        case .unavailable:
+            unavailableSecureKeys.insert(key)
+            return ""
+        }
     }
 
     private func loadBabyBirthday() {
@@ -519,20 +615,22 @@ struct SettingsView: View {
         }
     }
 
-    private func testStorage() {
-        guard !isTestingStorage else { return }
-        guard saveStorageSettings(showMessage: false) else { return }
-        setStatus(StatusSection.storage, "正在测试连接…")
-        isTestingStorage = true
-
-        let provider: any RemoteStorageProvider
-        do {
-            provider = try ProviderFactory.makeRemoteStorageProvider()
-        } catch {
-            setStatus(StatusSection.storage, error.localizedDescription)
-            isTestingStorage = false
+    private func removeAPIKey(_ key: String, service: String) {
+        guard SecureSettings.save("", for: key, legacyDefaultsKey: key) else {
+            setStatus(StatusSection.ai, "\(service) API Key 未能移除，请重试。", severity: .error)
             return
         }
+        if key == SecureSettingKey.zhipuAPIKey { zhipuAPIKey = "" }
+        if key == SecureSettingKey.claudeAPIKey { claudeAPIKey = "" }
+        aiConfigurationRevision += 1
+        setStatus(StatusSection.ai, "已移除 \(service) API Key。", severity: .warning)
+    }
+
+    private func testStorage() {
+        guard !isTestingStorage else { return }
+        guard let provider = draftStorageProvider() else { return }
+        setStatus(StatusSection.storage, "正在测试连接…")
+        isTestingStorage = true
         Task {
             do {
                 try await provider.testConnection()
@@ -549,6 +647,41 @@ struct SettingsView: View {
         }
     }
 
+    private func draftStorageProvider() -> (any RemoteStorageProvider)? {
+        do {
+            if storageBackend == "s3" {
+                guard let endpoint = URL(string: s3Endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      endpoint.scheme?.lowercased() == "https", endpoint.host != nil else {
+                    setStatus(StatusSection.storage, "S3 Endpoint 无效，请填写完整的 HTTPS 地址。", severity: .error); return nil
+                }
+                guard !s3Region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.storage, "尚未填写 S3 Region。", severity: .error); return nil
+                }
+                guard !s3Bucket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.storage, "尚未填写 S3 Bucket。", severity: .error); return nil
+                }
+                let secret = s3SecretKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? SecureSettings.load(SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey)
+                    : s3SecretKey
+                guard !s3AccessKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !secret.isEmpty else {
+                    setStatus(StatusSection.storage, "请填写 S3 Access Key 和 Secret Key。", severity: .error); return nil
+                }
+                return S3Provider(endpoint: endpoint, bucket: s3Bucket.trimmingCharacters(in: .whitespacesAndNewlines), region: s3Region.trimmingCharacters(in: .whitespacesAndNewlines), accessKey: s3AccessKey.trimmingCharacters(in: .whitespacesAndNewlines), secretKey: secret, pathStyle: s3PathStyle)
+            }
+            let value = webDAVBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil else {
+                setStatus(StatusSection.storage, "WebDAV 地址无效，请填写完整的 HTTP(S) 地址。", severity: .error); return nil
+            }
+            let password = webDAVPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? SecureSettings.load(SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword)
+                : webDAVPassword
+            guard !webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !password.isEmpty else {
+                setStatus(StatusSection.storage, "请填写 WebDAV 账号和密码。", severity: .error); return nil
+            }
+            return WebDAVProvider(baseURL: url, username: webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+        }
+    }
+
     @discardableResult
     private func saveStorageSettings(showMessage: Bool = true) -> Bool {
         webDAVBaseURL = webDAVBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -559,14 +692,25 @@ struct SettingsView: View {
         s3AccessKey = s3AccessKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if storageBackend == "s3" {
-            guard SecureSettings.save(s3SecretKey, for: SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey) else {
-                setStatus(StatusSection.storage, "Secret Key 无法保存到钥匙串，配置未生效。")
-                return false
+            guard let endpoint = URL(string: s3Endpoint), endpoint.scheme?.lowercased() == "https", endpoint.host != nil else {
+                setStatus(StatusSection.storage, "S3 Endpoint 无效，请填写完整的 HTTPS 地址。", severity: .error); return false
+            }
+            guard !s3Region.isEmpty else { setStatus(StatusSection.storage, "尚未填写 S3 Region。", severity: .error); return false }
+            guard !s3Bucket.isEmpty else { setStatus(StatusSection.storage, "尚未填写 S3 Bucket。", severity: .error); return false }
+        } else {
+            guard let url = URL(string: webDAVBaseURL), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil else {
+                setStatus(StatusSection.storage, "WebDAV 地址无效，请填写完整的 HTTP(S) 地址。", severity: .error); return false
+            }
+            guard !webDAVUsername.isEmpty else { setStatus(StatusSection.storage, "尚未填写 WebDAV 账号。", severity: .error); return false }
+        }
+
+        if storageBackend == "s3" {
+            if !s3SecretKey.isEmpty, !SecureSettings.save(s3SecretKey, for: SecureSettingKey.s3SecretKey, legacyDefaultsKey: SecureSettingKey.s3SecretKey) {
+                setStatus(StatusSection.storage, "Secret Key 未能保存，请重试。", severity: .error); return false
             }
         } else {
-            guard SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword) else {
-                setStatus(StatusSection.storage, "密码无法保存到钥匙串，配置未生效。")
-                return false
+            if !webDAVPassword.isEmpty, !SecureSettings.save(webDAVPassword, for: SecureSettingKey.webDAVPassword, legacyDefaultsKey: SecureSettingKey.webDAVPassword) {
+                setStatus(StatusSection.storage, "WebDAV 密码未能保存，请重试。", severity: .error); return false
             }
             if let url = URL(string: webDAVBaseURL), url.scheme?.lowercased() == "http",
                let host = url.host?.lowercased(),
@@ -579,6 +723,14 @@ struct SettingsView: View {
         }
 
         if showMessage {
+            AppSettings.setString(storageBackend, for: SettingKey.storageBackend)
+            AppSettings.setString(webDAVBaseURL, for: SettingKey.webDAVBaseURL)
+            AppSettings.setString(webDAVUsername, for: SettingKey.webDAVUsername)
+            AppSettings.setString(s3Endpoint, for: SettingKey.s3Endpoint)
+            AppSettings.setString(s3Region, for: SettingKey.s3Region)
+            AppSettings.setString(s3Bucket, for: SettingKey.s3Bucket)
+            AppSettings.setString(s3AccessKey, for: SettingKey.s3AccessKey)
+            AppSettings.setBool(s3PathStyle, for: SettingKey.s3PathStyle)
             setStatus(StatusSection.storage, "存储配置已保存。")
         }
         return true
@@ -706,24 +858,25 @@ struct SettingsView: View {
     private func saveReminder() {
         Task {
             let scheduler = ReminderScheduler()
+            if !reminderEnabled {
+                await scheduler.cancelAll()
+                AppState.saveReminderTimesToDefaults(reminderTimes)
+                await MainActor.run {
+                    appState.refreshRemindersForToday(force: true)
+                    setStatus(StatusSection.reminder, "提醒已关闭。", severity: .success)
+                }
+                return
+            }
             guard await scheduler.requestAuthorization() else {
-                await MainActor.run { setStatus(StatusSection.reminder, "通知授权未开启。") }
+                await MainActor.run { setStatus(StatusSection.reminder, "通知授权未开启，提醒未保存。", severity: .error) }
                 return
             }
             AppState.saveReminderTimesToDefaults(reminderTimes)
-            if reminderEnabled {
-                let components = reminderTimes.map { Calendar.current.dateComponents([.hour, .minute], from: $0) }
-                await scheduler.setDailyReminders(components)
-                await MainActor.run {
-                    appState.refreshRemindersForToday(force: true)
-                    setStatus(StatusSection.reminder, "已保存 \(components.count) 个提醒。")
-                }
-            } else {
-                await scheduler.cancelAll()
-                await MainActor.run {
-                    appState.refreshRemindersForToday(force: true)
-                    setStatus(StatusSection.reminder, "提醒已关闭。")
-                }
+            let components = reminderTimes.map { Calendar.current.dateComponents([.hour, .minute], from: $0) }
+            await scheduler.setDailyReminders(components)
+            await MainActor.run {
+                appState.refreshRemindersForToday(force: true)
+                setStatus(StatusSection.reminder, "已保存 \(components.count) 个提醒。", severity: .success)
             }
         }
     }
@@ -762,23 +915,28 @@ struct SettingsView: View {
     }
 
     private func checkAIHealth() {
-        guard saveAISettings(showMessage: false) else { return }
-        appState.reloadAISettings()
+        guard aiEnabled else {
+            setStatus(StatusSection.ai, "AI 已关闭，请先启用。", severity: .error)
+            return
+        }
+        guard let provider = draftAIProvider() else { return }
+        let revision = aiConfigurationRevision
         setStatus(StatusSection.ai, "正在测试连接…")
         isTestingAI = true
         Task {
             do {
-                guard let provider = appState.aiService.provider else { throw AIError.disabled }
                 let result = try await provider.complete([
                     AIMessage(role: .system, content: "只回复 OK。"),
                     AIMessage(role: .user, content: "ping")
                 ], options: AIOptions(temperature: 0, maxTokens: 8))
                 await MainActor.run {
+                    guard revision == aiConfigurationRevision else { return }
                     setStatus(StatusSection.ai, result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "连接成功。" : "连接成功：\(result)")
                     isTestingAI = false
                 }
             } catch {
                 await MainActor.run {
+                    guard revision == aiConfigurationRevision else { return }
                     setStatus(StatusSection.ai, error.localizedDescription)
                     isTestingAI = false
                 }
@@ -788,6 +946,8 @@ struct SettingsView: View {
 
     @discardableResult
     private func saveAISettings(showMessage: Bool = true) -> Bool {
+        zhipuAPIKey = zhipuAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        claudeAPIKey = claudeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         zhipuEndpoint = zhipuEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         zhipuModel = zhipuModel.trimmingCharacters(in: .whitespacesAndNewlines)
         claudeEndpoint = claudeEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -795,26 +955,127 @@ struct SettingsView: View {
         ollamaEndpoint = ollamaEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         ollamaModel = ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        if aiEnabled {
+            if aiProvider == "ollama" {
+                guard !ollamaModel.isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写 Ollama 模型名称。", severity: .error)
+                    return false
+                }
+                guard (try? ProviderFactory.validateHTTPURL(ollamaEndpoint, service: "Ollama")) != nil else {
+                    setStatus(StatusSection.ai, "Ollama 服务地址无效，请填写完整的 HTTP(S) 地址。", severity: .error)
+                    return false
+                }
+            } else if aiProvider == "zhipu" {
+                guard !zhipuModel.isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写智谱模型名称。", severity: .error); return false
+                }
+                guard (try? ProviderFactory.validateHTTPURL(zhipuEndpoint, service: "智谱")) != nil else {
+                    setStatus(StatusSection.ai, "智谱服务地址无效，请填写完整的 HTTP(S) 地址。", severity: .error); return false
+                }
+            } else if aiProvider == "claude" {
+                guard !claudeModel.isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写 Claude 模型名称。", severity: .error); return false
+                }
+                guard (try? ProviderFactory.validateHTTPURL(claudeEndpoint, service: "Claude")) != nil else {
+                    setStatus(StatusSection.ai, "Claude 服务地址无效，请填写完整的 HTTP(S) 地址。", severity: .error); return false
+                }
+            }
+        }
+
         switch aiProvider {
         case "zhipu":
-            guard SecureSettings.save(zhipuAPIKey, for: SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey) else {
-                setStatus(StatusSection.ai, "智谱 API Key 无法保存到钥匙串，配置未生效。")
-                return false
+            if !zhipuAPIKey.isEmpty {
+                guard SecureSettings.save(zhipuAPIKey, for: SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey) else {
+                    setStatus(StatusSection.ai, "智谱 API Key 未能保存，请重试。", severity: .error)
+                    return false
+                }
+            } else if aiEnabled {
+                if unavailableSecureKeys.contains(SecureSettingKey.zhipuAPIKey) {
+                    setStatus(StatusSection.ai, "无法读取已保存的智谱 API Key，请重试读取。", severity: .error)
+                    return false
+                }
+                if SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    setStatus(StatusSection.ai, "尚未填写智谱 API Key。", severity: .error)
+                    return false
+                }
             }
         case "claude":
-            guard SecureSettings.save(claudeAPIKey, for: SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey) else {
-                setStatus(StatusSection.ai, "Claude API Key 无法保存到钥匙串，配置未生效。")
-                return false
+            if !claudeAPIKey.isEmpty {
+                guard SecureSettings.save(claudeAPIKey, for: SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey) else {
+                    setStatus(StatusSection.ai, "Claude API Key 未能保存，请重试。", severity: .error)
+                    return false
+                }
+            } else if aiEnabled {
+                if unavailableSecureKeys.contains(SecureSettingKey.claudeAPIKey) {
+                    setStatus(StatusSection.ai, "无法读取已保存的 Claude API Key，请重试读取。", severity: .error)
+                    return false
+                }
+                if SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    setStatus(StatusSection.ai, "尚未填写 Claude API Key。", severity: .error)
+                    return false
+                }
             }
         default:
             break
         }
+        AppSettings.setBool(aiEnabled, for: SettingKey.aiEnabled)
+        AppSettings.setBool(ritualAI, for: SettingKey.aiRitual)
+        AppSettings.setString(aiProvider, for: SettingKey.aiProvider)
+        AppSettings.setString(zhipuEndpoint, for: SettingKey.zhipuEndpoint)
+        AppSettings.setString(zhipuModel, for: SettingKey.zhipuModel)
+        AppSettings.setString(claudeEndpoint, for: SettingKey.claudeEndpoint)
+        AppSettings.setString(claudeModel, for: SettingKey.claudeModel)
+        AppSettings.setString(ollamaEndpoint, for: SettingKey.ollamaEndpoint)
+        AppSettings.setString(ollamaModel, for: SettingKey.ollamaModel)
         appState.reloadAISettings()
+        aiConfigurationRevision += 1
 
         if showMessage {
             setStatus(StatusSection.ai, "AI 配置已保存。")
         }
         return true
+    }
+
+    /// Build a provider from the visible draft. This keeps the connection test
+    /// read-only: a failed test never overwrites the last working credentials.
+    private func draftAIProvider() -> AIProvider? {
+        do {
+            switch aiProvider {
+            case "zhipu":
+                guard !zhipuModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写智谱模型名称。", severity: .error); return nil
+                }
+                let endpoint = try ProviderFactory.validateHTTPURL(zhipuEndpoint, service: "智谱")
+                let key = zhipuAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? SecureSettings.load(SecureSettingKey.zhipuAPIKey, legacyDefaultsKey: SecureSettingKey.zhipuAPIKey)
+                    : zhipuAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写智谱 API Key。", severity: .error); return nil
+                }
+                return ZhipuProvider(apiKey: key, model: zhipuModel, endpoint: endpoint)
+            case "claude":
+                guard !claudeModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写 Claude 模型名称。", severity: .error); return nil
+                }
+                let endpoint = try ProviderFactory.validateHTTPURL(claudeEndpoint, service: "Claude")
+                let key = claudeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? SecureSettings.load(SecureSettingKey.claudeAPIKey, legacyDefaultsKey: SecureSettingKey.claudeAPIKey)
+                    : claudeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写 Claude API Key。", severity: .error); return nil
+                }
+                return ClaudeProvider(apiKey: key, model: claudeModel, endpoint: endpoint)
+            default:
+                let endpoint = try ProviderFactory.validateHTTPURL(ollamaEndpoint, service: "Ollama")
+                guard !ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    setStatus(StatusSection.ai, "尚未填写 Ollama 模型名称。", severity: .error); return nil
+                }
+                return OllamaProvider(endpoint: endpoint, model: ollamaModel, embeddingModel: AppSettings.ollamaEmbeddingModel)
+            }
+        } catch {
+            setStatus(StatusSection.ai, error.localizedDescription, severity: .error)
+            return nil
+        }
     }
 
     private func saveCryptoSettings() {

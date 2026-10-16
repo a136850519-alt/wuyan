@@ -115,6 +115,14 @@ struct EditorView: View {
                 richTextController.focus()
             }
         }
+        .onReceive(richTextController.$currentFontSize) { size in
+            guard abs(selectedFontSize - size) > 0.01 else { return }
+            selectedFontSize = size
+        }
+        .onReceive(richTextController.$currentTextColor) { color in
+            let next = Color(nsColor: color)
+            if selectedTextColor != next { selectedTextColor = next }
+        }
         .sheet(item: $editingGrowthBoard, onDismiss: reloadBoards) { board in
             BoardEditorSheet(board: board).environmentObject(appState)
         }

@@ -38,6 +38,14 @@ struct AIOptions: Codable, Sendable {
 enum AIError: LocalizedError {
     case disabled
     case missingConfiguration
+    case missingAPIKey(service: String)
+    case invalidEndpoint(service: String)
+    case modelNotFound(service: String, model: String)
+    case authenticationFailed(service: String)
+    case permissionDenied(service: String)
+    case rateLimited(service: String)
+    case network(service: String)
+    case malformedResponse(service: String)
     case cancelledForPrivacy
     case blockedBySensitiveBoard
     case providerError(String)
@@ -48,6 +56,22 @@ enum AIError: LocalizedError {
             return "AI 已关闭。"
         case .missingConfiguration:
             return "AI 配置不完整。"
+        case let .missingAPIKey(service):
+            return "尚未填写 \(service) API Key。"
+        case let .invalidEndpoint(service):
+            return "\(service) 服务地址无效，请填写完整的 HTTP(S) 地址。"
+        case let .modelNotFound(service, model):
+            return "\(service) 中未找到模型「\(model)」。"
+        case let .authenticationFailed(service):
+            return "\(service) 身份验证失败，请检查当前服务的 API Key。"
+        case let .permissionDenied(service):
+            return "当前账号无权使用 \(service) 服务或模型。"
+        case let .rateLimited(service):
+            return "\(service) 请求过于频繁，请稍后再试。"
+        case let .network(service):
+            return "无法连接 \(service)，请检查网络和服务地址。"
+        case let .malformedResponse(service):
+            return "\(service) 返回的数据格式异常，请稍后重试。"
         case .cancelledForPrivacy:
             return "已取消云端发送。"
         case .blockedBySensitiveBoard:

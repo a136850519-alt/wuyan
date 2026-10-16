@@ -80,6 +80,13 @@ enum SecureSettings {
         keychain.readString(for: key)
     }
 
+    /// Preserve the distinction between a missing credential and a keychain
+    /// read failure for settings UI. Callers must not turn `.unavailable` into
+    /// an empty value or delete the last known credential.
+    static func readResult(_ key: String) -> Keychain.ReadResult {
+        keychain.readString(for: key)
+    }
+
     @discardableResult
     static func save(_ value: String, for key: String, legacyDefaultsKey: String? = nil) -> Bool {
         // R0-6: 验证 Keychain 写入成功后再清 UserDefaults

@@ -14,7 +14,7 @@ struct ZhipuProvider: AIProvider {
     }
 
     func complete(_ messages: [AIMessage], options: AIOptions) async throws -> String {
-        guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingAPIKey(service: "智谱") }
         var request = makeRequest()
         request.httpBody = try JSONEncoder().encode(makeBody(messages: messages, options: options, stream: false))
         let (data, response) = try await session.data(for: request)
@@ -27,12 +27,12 @@ struct ZhipuProvider: AIProvider {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard !apiKey.isEmpty else { throw AIError.missingConfiguration }
+                    guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingAPIKey(service: "智谱") }
                     var request = makeRequest()
                     request.httpBody = try JSONEncoder().encode(makeBody(messages: messages, options: options, stream: true))
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw AIError.providerError("智谱请求失败：HTTP \(http.statusCode)。")
+                        throw Self.httpError(status: http.statusCode, service: "智谱")
                     }
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
@@ -97,13 +97,26 @@ struct ZhipuProvider: AIProvider {
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
         if let error = try? JSONDecoder().decode(ZhipuErrorResponse.self, from: data) {
-            throw AIError.providerError(error.error?.message ?? error.message ?? "智谱请求失败：HTTP \(http.statusCode)。")
+            let message = error.error?.message ?? error.message
+            if http.statusCode == 401 { throw AIError.authenticationFailed(service: "智谱") }
+            if http.statusCode == 403 { throw AIError.permissionDenied(service: "智谱") }
+            if http.statusCode == 429 { throw AIError.rateLimited(service: "智谱") }
+            throw AIError.providerError(message ?? "智谱请求失败：HTTP \(http.statusCode)。")
         }
         if http.statusCode == 404 {
             let url = Self.chatCompletionsURL(from: endpoint).absoluteString
             throw AIError.providerError("智谱请求失败：HTTP 404。请检查智谱 Base URL，当前请求地址：\(url)")
         }
-        throw AIError.providerError("智谱请求失败：HTTP \(http.statusCode)。")
+        throw Self.httpError(status: http.statusCode, service: "智谱")
+    }
+
+    private static func httpError(status: Int, service: String) -> AIError {
+        switch status {
+        case 401: return .authenticationFailed(service: service)
+        case 403: return .permissionDenied(service: service)
+        case 429: return .rateLimited(service: service)
+        default: return .providerError("\(service) 请求失败：HTTP \(status)。")
+        }
     }
 }
 
