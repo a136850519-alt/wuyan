@@ -39,6 +39,7 @@ final class AppState: ObservableObject {
     let locationMetadata = LocationMetadataService()
     let audioRecorder = AudioRecorder()
     let syncCoordinator: SyncCoordinator
+    let yearArchiveService: YearArchiveService
 
     @Published var sidebarSelection: SidebarSelection = .all
     @Published var selectedEntryId: UUID?
@@ -52,6 +53,7 @@ final class AppState: ObservableObject {
     @Published var trustCloudDestination: String?
     /// 已归档年份（本地内容已删除、仅存于 NAS）。按降序排列。
     @Published var archivedYears: [Int] = []
+    @Published var archiveRecords: [YearArchiveRecord] = []
     /// UI-02（已确认）：归档进行中的年份——该年份内容锁定编辑，防止归档后本地删除丢掉新编辑。
     @Published var archivingYear: Int?
     @Published var pendingDeleteEntryId: UUID?
@@ -120,6 +122,7 @@ final class AppState: ObservableObject {
         }
         self.mediaStore = mediaStore
         self.syncCoordinator = SyncCoordinator(database: database, mediaStore: mediaStore, rescueMode: rescueMode)
+        self.yearArchiveService = YearArchiveService()
         self.isDiaryPasswordEnabled = DiaryLockStore.isEnabled
         self.isDiaryLocked = DiaryLockStore.isEnabled
         self.diaryIdleTimeoutMinutes = AppSettings.diaryIdleTimeoutMinutes
@@ -134,6 +137,7 @@ final class AppState: ObservableObject {
         // 测试构造的 AppState 与被测设置共享同一容器。
         let stored = AppSettings.archivedYears
         self.archivedYears = stored.sorted(by: >)
+        self.archiveRecords = AppSettings.archiveRecords
 
         // R2-3: 通过 AppMigrationRunner 触发媒体 Caches 迁移（v2）
         // 这里只执行 v2 迁移，v1（Keychain）已在 WuyanApp.init 中执行
@@ -160,6 +164,7 @@ final class AppState: ObservableObject {
             var years = Set(self.archivedYears)
             years.insert(year)
             self.setArchivedYears(years)
+            self.recordArchive(YearArchiveRecord(id: UUID(), year: year, destination: "webdav", location: AppSettings.webDAVBaseURL, createdAt: Date(), status: "completed", retainedCount: 0))
         }
         // R0-2: 下载成功后将该年从 archivedYears 移除并持久化
         syncCoordinator.onDownloadComplete = { [weak self] year in
@@ -401,8 +406,8 @@ final class AppState: ObservableObject {
             errorMessage = "救援模式：归档已禁用。"
             return
         }
-        guard year != Self.year(fromDayKey: DayKey.today) else {
-            errorMessage = "当前年份不能归档。"
+        guard year < Self.year(fromDayKey: DayKey.today) else {
+            errorMessage = "当前年份和未来年份不能归档。"
             return
         }
         // UI-02：归档期间该年份锁定；同时只允许一个归档任务
@@ -414,6 +419,64 @@ final class AppState: ObservableObject {
         // The coordinator creates its Task before returning, so this lock is
         // installed in the same main-actor turn only after startup is accepted.
         archivingYear = year
+    }
+
+    func archiveYearLocally(_ year: Int, to url: URL, password: String) {
+        guard !isRescueMode else {
+            errorMessage = "救援模式：归档已禁用。"
+            return
+        }
+        guard year < Self.year(fromDayKey: DayKey.today) else {
+            errorMessage = "当前年份和未来年份不能归档。"
+            return
+        }
+        guard archivingYear == nil, syncCoordinator.syncProgress == nil else {
+            errorMessage = "已有同步或归档任务进行中，请完成后再试。"
+            return
+        }
+        archivingYear = year
+        syncCoordinator.syncProgress = SyncProgress(phase: "准备年度归档", completedUnitCount: 0, totalUnitCount: 1, detail: "正在扫描内容与附件")
+        let service = yearArchiveService
+        let database = db
+        let mediaStore = self.mediaStore
+        Task {
+            do {
+                syncCoordinator.syncProgress = SyncProgress(phase: "写入本地归档", completedUnitCount: 0, totalUnitCount: 1, detail: url.lastPathComponent)
+                let snapshot = try service.createArchive(year: year, password: password, to: url, database: database)
+                syncCoordinator.syncProgress = SyncProgress(phase: "校验归档", completedUnitCount: 1, totalUnitCount: 1, detail: "已从最终文件读回并验证")
+                recordArchive(YearArchiveRecord(id: UUID(), year: year, destination: "local", location: url.path, createdAt: Date(), status: "cleanupPending", retainedCount: 0))
+                let cleanup = try service.cleanup(snapshot: snapshot, database: database, mediaStore: mediaStore)
+                let status = cleanup.retainedEntries > 0 ? "partiallyCompleted" : "completed"
+                recordArchive(YearArchiveRecord(id: UUID(), year: year, destination: "local", location: url.path, createdAt: Date(), status: status, retainedCount: cleanup.retainedEntries))
+                syncCoordinator.syncMessage = cleanup.retainedEntries > 0
+                    ? "\(year) 年归档已保存，还有 \(cleanup.retainedEntries) 篇在处理期间发生变化，已保留在 App 中。"
+                    : "\(year) 年已归档，已释放本地内容。"
+                syncCoordinator.syncProgress = nil
+                archivingYear = nil
+            } catch {
+                syncCoordinator.syncProgress = nil
+                archivingYear = nil
+                errorMessage = "归档未完成，本地内容已保留。\n\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func archiveSummary(for year: Int) -> YearArchiveSummary? {
+        try? yearArchiveService.summary(year: year, database: db)
+    }
+
+    private func recordArchive(_ record: YearArchiveRecord) {
+        archiveRecords.removeAll { $0.year == record.year && $0.destination == record.destination && $0.location == record.location }
+        archiveRecords.append(record)
+        archiveRecords.sort { $0.createdAt > $1.createdAt }
+        AppSettings.setArchiveRecords(archiveRecords)
+    }
+
+    func relinkArchive(_ record: YearArchiveRecord, to url: URL) {
+        guard let index = archiveRecords.firstIndex(where: { $0.id == record.id }) else { return }
+        archiveRecords[index].location = url.path
+        archiveRecords[index].status = "completed"
+        AppSettings.setArchiveRecords(archiveRecords)
     }
 
     func downloadYearFromRemote(_ year: Int) {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
@@ -7,6 +8,8 @@ struct SidebarView: View {
     @State private var isAddingBoard = false
     @State private var editingBoard: Board?
     @State private var pendingArchiveYear: Int?
+    @State private var pendingArchiveRecord: YearArchiveRecord?
+    @State private var pendingYearbookYear: Int?
     @State private var isArchivedExpanded = true
     @State private var expandedYears: Set<Int> = []
     @State private var yearThemeSheetYear: Int?
@@ -35,13 +38,13 @@ struct SidebarView: View {
                 ForEach(years, id: \.self) { year in
                     HStack {
                         Label(String(year), systemImage: "calendar")
-                            .foregroundStyle(AppSettings.yearTheme(year).theme.color)
+                            .foregroundStyle(AppSettings.yearThemeValue(year).color)
                         Spacer()
                         Button {
                             yearThemeSheetYear = year
                         } label: {
                             Circle()
-                                .fill(AppSettings.yearTheme(year).theme.color)
+                                .fill(AppSettings.yearThemeValue(year).color)
                                 .frame(width: 10, height: 10)
                                 .frame(width: 28, height: 28)
                                 .contentShape(Rectangle())
@@ -60,16 +63,21 @@ struct SidebarView: View {
                     .tag(SidebarSelection.year(year))
                     .listRowBackground(
                         appState.sidebarSelection == .year(year)
-                            ? AppSettings.yearTheme(year).theme.softColor
+                            ? AppSettings.yearThemeValue(year).softColor
                             : Color.clear
                     )
                     .contextMenu {
-                        Button(role: .destructive) {
+                    Button {
                             pendingArchiveYear = year
                         } label: {
-                            Label("归档到 NAS（删除本地）", systemImage: "archivebox")
+                            Label("归档这一年…", systemImage: "archivebox")
                         }
-                        .disabled(year == AppState.year(fromDayKey: DayKey.today))
+                        .disabled(year >= AppState.year(fromDayKey: DayKey.today))
+                    Button {
+                        pendingYearbookYear = year
+                    } label: {
+                        Label("导出年度日记本…", systemImage: "book.closed")
+                    }
                     }
 
                     if expandedYears.contains(year) {
@@ -99,29 +107,59 @@ struct SidebarView: View {
 
             Section {
                 DisclosureGroup(isExpanded: $isArchivedExpanded) {
-                    if appState.archivedYears.isEmpty {
-                        Text("暂无归档。在年份上右键「归档到 NAS」可把整年移到 NAS 并腾出本地空间。")
+                    if archiveRows.isEmpty {
+                        Text("暂无归档。在年份上右键「归档这一年…」可选择 WebDAV / NAS 或本地文件。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(appState.archivedYears, id: \.self) { year in
+                        ForEach(archiveRows) { row in
                             HStack(spacing: 8) {
-                                Label("\(String(year)) 年", systemImage: "archivebox.fill")
+                                Label("\(row.year) · \(row.source)", systemImage: "archivebox.fill")
                                     .labelStyle(.titleAndIcon)
                                 Spacer()
-                                Button {
-                                    appState.downloadYearFromRemote(year)
-                                } label: {
-                                    Image(systemName: "arrow.down.circle")
+                                if row.destination == "webdav" {
+                                    Button {
+                                        appState.downloadYearFromRemote(row.year)
+                                    } label: {
+                                        Image(systemName: "arrow.down.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("下载回本地")
+                                } else if let record = row.record {
+                                    Button {
+                                        pendingArchiveRecord = record
+                                    } label: {
+                                        Image(systemName: row.fileExists ? "doc.text.magnifyingglass" : "arrow.triangle.2.circlepath")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(row.fileExists ? "打开归档" : "重新定位归档文件")
+                                    Button {
+                                        revealLocalArchive(record)
+                                    } label: {
+                                        Image(systemName: "folder")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("在 Finder 中显示")
                                 }
-                                .buttonStyle(.plain)
-                                .help("下载回本地")
                             }
                             .contextMenu {
-                                Button {
-                                    appState.downloadYearFromRemote(year)
-                                } label: {
-                                    Label("下载回本地", systemImage: "arrow.down.circle")
+                                if row.destination == "webdav" {
+                                    Button {
+                                        appState.downloadYearFromRemote(row.year)
+                                    } label: {
+                                        Label("下载回本地", systemImage: "arrow.down.circle")
+                                    }
+                                } else if let record = row.record {
+                                    Button {
+                                        pendingArchiveRecord = record
+                                    } label: {
+                                        Label(row.fileExists ? "打开归档" : "重新定位归档文件", systemImage: row.fileExists ? "doc.text.magnifyingglass" : "arrow.triangle.2.circlepath")
+                                    }
+                                    Button {
+                                        revealLocalArchive(record)
+                                    } label: {
+                                        Label("在 Finder 中显示", systemImage: "folder")
+                                    }
                                 }
                             }
                         }
@@ -143,10 +181,30 @@ struct SidebarView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .tag(SidebarSelection.settings)
-                if !appState.archivedYears.isEmpty {
+                if !archiveRows.isEmpty {
                     Text("不含已归档年份")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let progress = appState.syncProgress, let year = appState.archivingYear {
+                Section("年度归档") {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("\(year) 年 · \(progress.phase)")
+                            Spacer()
+                            Text(progress.percentageText).monospacedDigit()
+                        }
+                        ProgressView(value: progress.fractionCompleted)
+                            .tint(AppSettings.yearThemeValue(year).color)
+                        if let detail = progress.detail, !detail.isEmpty {
+                            Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Text("校验成功前本地内容已保留")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
             }
         }
@@ -195,23 +253,29 @@ struct SidebarView: View {
                 }
             }
         }
-        .confirmationDialog(
-            pendingArchiveYear.map { "归档 \($0) 年到 NAS？" } ?? "归档到 NAS？",
-            isPresented: Binding(
-                get: { pendingArchiveYear != nil },
-                set: { if !$0 { pendingArchiveYear = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("归档并删除本地内容", role: .destructive) {
-                if let year = pendingArchiveYear {
-                    appState.archiveYearToRemote(year)
+        .sheet(isPresented: Binding(
+            get: { pendingArchiveYear != nil },
+            set: { if !$0 { pendingArchiveYear = nil } }
+        )) {
+            if let year = pendingArchiveYear {
+                YearArchiveSheet(year: year) {
+                    pendingArchiveYear = nil
                 }
-                pendingArchiveYear = nil
+                .environmentObject(appState)
             }
-            Button("取消", role: .cancel) { pendingArchiveYear = nil }
-        } message: {
-            Text("会先把该年的日记、日札和附件全部上传到 NAS，确认无误后删除本地正文与附件以腾出空间。之后可在「已归档」里随时下载回本地。")
+        }
+        .sheet(item: $pendingArchiveRecord) { record in
+            YearArchiveReaderSheet(record: record)
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingYearbookYear != nil },
+            set: { if !$0 { pendingYearbookYear = nil } }
+        )) {
+            if let year = pendingYearbookYear {
+                YearbookExportSheet(year: year)
+                    .environmentObject(appState)
+            }
         }
         .onChange(of: appState.archivedYears) {
             reloadEntries()
@@ -240,6 +304,27 @@ struct SidebarView: View {
             return [AppState.year(fromDayKey: DayKey.today)]
         }
         return entryYears.sorted(by: >)
+    }
+
+    private var archiveRows: [ArchiveRow] {
+        var rows = appState.archiveRecords.map { ArchiveRow(record: $0) }
+        for year in appState.archivedYears where !rows.contains(where: { $0.year == year && $0.destination == "webdav" }) {
+            rows.append(ArchiveRow(year: year, source: "WebDAV", destination: "webdav", record: nil))
+        }
+        return rows.sorted { $0.year > $1.year }
+    }
+
+    private func revealLocalArchive(_ record: YearArchiveRecord) {
+        guard let location = record.location else {
+            pendingArchiveRecord = record
+            return
+        }
+        let url = URL(fileURLWithPath: location)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            pendingArchiveRecord = record
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func toggleYear(_ year: Int) {
@@ -287,78 +372,141 @@ private extension String {
     var theme: YearTheme { YearTheme(rawValue: self) ?? .default }
 }
 
+private struct ArchiveRow: Identifiable {
+    let year: Int
+    let source: String
+    let destination: String
+    let record: YearArchiveRecord?
+    var id: String { record?.id.uuidString ?? "\(year)-\(destination)" }
+    var fileExists: Bool {
+        guard destination == "local", let location = record?.location else { return false }
+        return FileManager.default.fileExists(atPath: location)
+    }
+
+    init(record: YearArchiveRecord) {
+        self.year = record.year
+        self.source = record.sourceLabel
+        self.destination = record.destination
+        self.record = record
+    }
+
+    init(year: Int, source: String, destination: String, record: YearArchiveRecord?) {
+        self.year = year
+        self.source = source
+        self.destination = destination
+        self.record = record
+    }
+}
+
 private struct YearThemePicker: View {
     let year: Int
     let onClose: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var draft: YearTheme
 
     init(year: Int, onClose: @escaping () -> Void) {
         self.year = year
         self.onClose = onClose
-        _draft = State(initialValue: AppSettings.yearTheme(year).theme)
+        let value = AppSettings.yearThemeValue(year)
+        _draftHex = State(initialValue: value.hex)
+        _draftColor = State(initialValue: value.color)
     }
+
+    @State private var draftHex: String
+    @State private var draftColor: Color
+    @State private var hexError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("设置 \(year) 年主题色")
+            Text("\(year) 年主题色")
                 .font(.title3.weight(.semibold))
             Text("只影响该年份的侧栏强调色与选中状态。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 10)], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
                 ForEach(YearTheme.allCases) { theme in
                     Button {
-                        draft = theme
+                        draftHex = theme.lightHex
+                        draftColor = theme.color
+                        hexError = nil
                     } label: {
                         HStack(spacing: 8) {
                             Circle().fill(theme.color).frame(width: 20, height: 20)
                             Text(theme.displayName)
                             Spacer()
-                            if draft == theme { Image(systemName: "checkmark") }
+                            if draftHex == theme.lightHex { Image(systemName: "checkmark") }
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(theme.softColor)
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(draft == theme ? theme.color : .clear, lineWidth: 2))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(draftHex == theme.lightHex ? theme.color : .clear, lineWidth: 2))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(theme.displayName)
                 }
             }
 
-            HStack {
-                Circle().fill(draft.color).frame(width: 10, height: 10)
-                Text("\(year) 年预览")
-                    .foregroundStyle(draft.color)
-                Spacer()
+            ColorPicker("自定义颜色", selection: $draftColor, supportsOpacity: false)
+                .onChange(of: draftColor) { _, color in
+                    draftHex = Self.hex(for: color) ?? draftHex
+                    hexError = nil
+                }
+            HStack(alignment: .top, spacing: 10) {
+                TextField("HEX", text: $draftHex)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: draftHex) { _, value in
+                        if let normalized = Palette.normalizedHex(value) {
+                            draftHex = normalized
+                            draftColor = Color(hex: normalized)
+                            hexError = nil
+                        } else {
+                            hexError = "请输入有效的 HEX 色值，例如 #50786B"
+                        }
+                    }
+                Image(systemName: "eyedropper")
+                    .foregroundStyle(.secondary)
+                    .help("打开系统取色器")
             }
-            .padding(12)
-            .background(Palette.sidebarPaper)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            if let hexError {
+                Text(hexError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
 
             HStack {
-                Button("恢复默认") { draft = .default }
+                Button("恢复默认") {
+                    draftHex = YearTheme.default.lightHex
+                    draftColor = YearTheme.default.color
+                    hexError = nil
+                }
                 Spacer()
                 Button("取消") {
                     onClose(); dismiss()
                 }
-                Button("应用") {
-                    AppSettings.setYearTheme(draft.rawValue, for: year)
+                Button("保存") {
+                    let value = YearTheme.allCases.first(where: { $0.lightHex == draftHex })
+                        .map(YearThemeValue.preset) ?? .custom(hex: draftHex)
+                    AppSettings.setYearThemeValue(value, for: year)
                     onClose(); dismiss()
                 }
+                .disabled(hexError != nil || Palette.normalizedHex(draftHex) == nil)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .tint(draft.color)
+                .tint(draftColor)
             }
         }
         .padding(28)
-        .frame(width: 496)
+        .frame(width: 430)
         .fixedSize(horizontal: false, vertical: true)
         .onExitCommand {
             onClose(); dismiss()
         }
+    }
+
+    private static func hex(for color: Color) -> String? {
+        guard let cgColor = NSColor(color).usingColorSpace(.deviceRGB), let components = cgColor.cgColor.components else { return nil }
+        let values = components.count >= 3 ? components : [components.first ?? 0, components.first ?? 0, components.first ?? 0]
+        return String(format: "#%02X%02X%02X", Int(values[0] * 255), Int(values[1] * 255), Int(values[2] * 255))
     }
 }
 

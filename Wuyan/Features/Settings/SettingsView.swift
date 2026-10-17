@@ -36,6 +36,9 @@ struct SettingsView: View {
     @State private var pendingRestoreDirectory: URL?
     @State private var pendingJSONImportURL: URL?
     @State private var pendingEvictYear: Int?
+    @State private var pendingArchiveYear: Int?
+    @State private var pendingYearbookYear: Int?
+    @State private var yearChoices: [Int] = []
     @State private var webDAVPassword = ""
     @State private var s3SecretKey = ""
     @State private var zhipuAPIKey = ""
@@ -370,6 +373,21 @@ struct SettingsView: View {
                     importJSONBackup()
                 }
                 .disabled(appState.isBackupTaskRunning)
+                Menu {
+                    ForEach(yearChoices, id: \.self) { year in
+                        Button("归档 \(year) 年…") { pendingArchiveYear = year }
+                            .disabled(year >= AppState.year(fromDayKey: DayKey.today))
+                    }
+                } label: {
+                    Label("年度归档…", systemImage: "archivebox")
+                }
+                Menu {
+                    ForEach(yearChoices, id: \.self) { year in
+                        Button("制作 \(year) 年日记本…") { pendingYearbookYear = year }
+                    }
+                } label: {
+                    Label("制作年度日记本…", systemImage: "book.closed")
+                }
                 if appState.isBackupTaskRunning {
                     ProgressView("正在处理备份…")
                 }
@@ -464,6 +482,7 @@ struct SettingsView: View {
             loadConflictSummaries()
             // R1-1: 延迟加载媒体统计，不阻塞首屏
             loadMediaStats()
+            loadYearChoices()
         }
         .onChange(of: appState.syncConflicts) {
             loadConflictSummaries()
@@ -519,6 +538,24 @@ struct SettingsView: View {
         .sheet(item: $diaryPasswordSheetMode) { mode in
             DiaryPasswordSheet(mode: mode)
                 .environmentObject(appState)
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingArchiveYear != nil },
+            set: { if !$0 { pendingArchiveYear = nil } }
+        )) {
+            if let year = pendingArchiveYear {
+                YearArchiveSheet(year: year) { pendingArchiveYear = nil }
+                    .environmentObject(appState)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { pendingYearbookYear != nil },
+            set: { if !$0 { pendingYearbookYear = nil } }
+        )) {
+            if let year = pendingYearbookYear {
+                YearbookExportSheet(year: year)
+                    .environmentObject(appState)
+            }
         }
     }
 
@@ -1149,6 +1186,12 @@ struct SettingsView: View {
     private func loadMediaStats() {
         mediaTotalSize = appState.mediaStore.totalMediaSize()
         mediaYearSizes = appState.mediaStore.mediaSizeByYear()
+    }
+
+    private func loadYearChoices() {
+        let current = AppState.year(fromDayKey: DayKey.today)
+        let entryYears = (try? appState.entries.timeline(filter: .all).map { AppState.year(fromDayKey: $0.dayDate) }) ?? []
+        yearChoices = Set(entryYears + [current, current - 1]).sorted(by: >)
     }
 
     private func loadConflictSummaries() {

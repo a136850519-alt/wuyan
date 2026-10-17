@@ -47,6 +47,58 @@ enum YearTheme: String, CaseIterable, Identifiable {
     }
 }
 
+/// 年度颜色的持久化值。预设保留稳定标识，自定义颜色保存为 sRGB HEX。
+enum YearThemeValue: Equatable {
+    case preset(YearTheme)
+    case custom(hex: String)
+
+    static let `default`: YearThemeValue = .preset(.pine)
+
+    init(storageValue: String?) {
+        guard let raw = storageValue?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            self = .default
+            return
+        }
+        if let preset = YearTheme(rawValue: raw) {
+            self = .preset(preset)
+        } else if let hex = Palette.normalizedHex(raw) {
+            self = .custom(hex: hex)
+        } else {
+            self = .default
+        }
+    }
+
+    var storageValue: String {
+        switch self {
+        case let .preset(theme): return theme.rawValue
+        case let .custom(hex): return hex
+        }
+    }
+
+    var hex: String {
+        switch self {
+        case let .preset(theme): return theme.lightHex
+        case let .custom(hex): return hex
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case let .preset(theme): return theme.color
+        case let .custom(hex): return Color(hex: hex)
+        }
+    }
+
+    var softColor: Color { color.opacity(0.14) }
+
+    var displayName: String {
+        switch self {
+        case let .preset(theme): return theme.displayName
+        case .custom: return "自定义颜色"
+        }
+    }
+}
+
 enum Palette {
     static let cinnabar = Color(hex: "#D85A30")
     static let cinnabarDeep = adaptive(light: "#A94120", dark: "#EC8057")
@@ -61,6 +113,17 @@ enum Palette {
     static let ink = adaptive(light: "#2E302A", dark: "#F2ECE4")
     static let muted = adaptive(light: "#686A60", dark: "#B8B6AD")
     static let timelineSelection = adaptive(light: "#F4DFD2", dark: "#51362A")
+
+    static func normalizedHex(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard raw.count == 3 || raw.count == 6,
+              raw.allSatisfy({ $0.isHexDigit }) else { return nil }
+        let expanded = raw.count == 3
+            ? raw.map { "\($0)\($0)" }.joined()
+            : raw
+        return "#" + expanded.uppercased()
+    }
     static let inspectorSurface = adaptive(light: "#F7F4ED", dark: "#262624")
     static let cardSurface = adaptive(light: "#EEEADF", dark: "#34332E")
     static let field = adaptive(light: "#EAE6DC", dark: "#373732")

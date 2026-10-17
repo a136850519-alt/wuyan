@@ -334,8 +334,8 @@ final class SyncCoordinator: ObservableObject {
             setSyncError("同步或其它远端任务进行中，请完成后再归档。")
             return false
         }
-        guard year != AppState.year(fromDayKey: DayKey.today) else {
-            setSyncError("当前年份不能归档，请在年份结束后再归档。")
+        guard year < AppState.year(fromDayKey: DayKey.today) else {
+            setSyncError("当前年份和未来年份不能归档，请在年份结束后再归档。")
             return false
         }
         syncMessage = "\(year) 年归档中…"
@@ -343,7 +343,11 @@ final class SyncCoordinator: ObservableObject {
         clearSyncError()
 
         // R0-5: 加密守卫——归档前必须验证加密口令
-        guard checkCryptoPassphrase() else { return false }
+        guard checkCryptoPassphrase() else {
+            syncMessage = nil
+            syncProgress = nil
+            return false
+        }
 
         let provider: any RemoteStorageProvider
         do {
@@ -377,11 +381,11 @@ final class SyncCoordinator: ObservableObject {
                 let uploaded = result.report.mediaUploaded
                 var removed = 0
                 var skippedEdits = 0
-                for entry in result.pushedEntries {
+                for (index, entry) in result.pushedEntries.enumerated() {
                     await MainActor.run {
                         self.syncProgress = SyncProgress(
                             phase: "正在清理本地内容",
-                            completedUnitCount: 0,
+                            completedUnitCount: index,
                             totalUnitCount: max(1, result.pushedEntries.count),
                             detail: entry.dayDate
                         )
@@ -390,6 +394,14 @@ final class SyncCoordinator: ObservableObject {
                     guard let current = try database.entryDAO.entry(id: entry.id),
                           current.contentHash == entry.contentHash else {
                         skippedEdits += 1
+                        await MainActor.run {
+                            self.syncProgress = SyncProgress(
+                                phase: "正在清理本地内容",
+                                completedUnitCount: index + 1,
+                                totalUnitCount: max(1, result.pushedEntries.count),
+                                detail: "\(entry.dayDate) · 内容已变化，保留本地"
+                            )
+                        }
                         continue
                     }
                     let assets = try database.mediaAssetDAO.allAssets(for: entry.mediaIds)
@@ -404,10 +416,18 @@ final class SyncCoordinator: ObservableObject {
                     // 归档是本地副本清理，不是同步删除；不能写入墓碑，否则下一轮同步
                     // 会把已经归档的远端条目标记为 deleted。
                     try database.entryDAO.removeArchivedLocal(id: entry.id)
+                    await MainActor.run {
+                        self.syncProgress = SyncProgress(
+                            phase: "正在清理本地内容",
+                            completedUnitCount: index + 1,
+                            totalUnitCount: max(1, result.pushedEntries.count),
+                            detail: entry.dayDate
+                        )
+                    }
                 }
 
                 await MainActor.run {
-                    self.syncProgress = SyncProgress(phase: "正在删除本地内容", completedUnitCount: 0, totalUnitCount: 1)
+                    self.syncProgress = SyncProgress(phase: "正在删除本地内容", completedUnitCount: 1, totalUnitCount: 1)
                     self.syncMessage = "\(year) 年归档：正在删除本地内容"
                 }
                 // 日札只删「与推送版本一致」的——归档期间被编辑的不动

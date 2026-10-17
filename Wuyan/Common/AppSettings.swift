@@ -44,6 +44,7 @@ enum SettingKey {
     // MARK: - 归档与同步
     // R2-6: 从 AppState/SyncCoordinator 硬编码提取到此
     static let archivedYears = "settings.archive.years"
+    static let archiveRecords = "settings.archive.records"
     static let onboardingCompleted = "settings.onboarding.completed"
     static let diaryIdleTimeoutMinutes = "settings.diaryLock.idleTimeoutMinutes"
     static let diaryPasswordEnabled = "settings.diaryLock.enabled"
@@ -138,14 +139,24 @@ enum AppSettings {
 
     /// 年份主题色是本机外观偏好，只保存稳定标识，不写入日记内容。
     static func yearTheme(_ year: Int) -> String {
-        let themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String]
-        let raw = themes?[String(year)] ?? YearTheme.default.rawValue
-        return YearTheme(rawValue: raw)?.rawValue ?? YearTheme.default.rawValue
+        if case let .preset(theme) = yearThemeValue(year) { return theme.rawValue }
+        return YearTheme.default.rawValue
     }
 
     static func setYearTheme(_ theme: String, for year: Int) {
         var themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String] ?? [:]
-        themes[String(year)] = YearTheme(rawValue: theme)?.rawValue ?? YearTheme.default.rawValue
+        themes[String(year)] = YearThemeValue(storageValue: theme).storageValue
+        defaults.set(themes, forKey: SettingKey.appearanceYearThemes)
+    }
+
+    static func yearThemeValue(_ year: Int) -> YearThemeValue {
+        let themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String]
+        return YearThemeValue(storageValue: themes?[String(year)])
+    }
+
+    static func setYearThemeValue(_ value: YearThemeValue, for year: Int) {
+        var themes = defaults.dictionary(forKey: SettingKey.appearanceYearThemes) as? [String: String] ?? [:]
+        themes[String(year)] = value.storageValue
         defaults.set(themes, forKey: SettingKey.appearanceYearThemes)
     }
 
@@ -231,6 +242,17 @@ enum AppSettings {
     static func setArchivedYears(_ years: [Int]) {
         defaults.set(years, forKey: SettingKey.archivedYears)
         defaults.removeObject(forKey: legacyArchivedYearsKey)
+    }
+
+    static var archiveRecords: [YearArchiveRecord] {
+        guard let data = defaults.data(forKey: SettingKey.archiveRecords),
+              let records = try? JSONDecoder.wuyan.decode([YearArchiveRecord].self, from: data) else { return [] }
+        return records
+    }
+
+    static func setArchiveRecords(_ records: [YearArchiveRecord]) {
+        guard let data = try? JSONEncoder.wuyan.encode(records) else { return }
+        defaults.set(data, forKey: SettingKey.archiveRecords)
     }
 
     static var onboardingCompleted: Bool {
